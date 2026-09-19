@@ -1,7 +1,7 @@
 import { haversine, gradeOf } from "./utils.js";
 import { REGISTERED_BOXES, WEIGHTS, REASON_TEXT, LABEL_TEXT } from "./data.js";
 
-const MAX_DIM = 480;
+const MAX_DIM = 720;
 const ANALYSIS_DIM = 64;
 
 function loadImage(file) {
@@ -18,9 +18,8 @@ function loadImage(file) {
   });
 }
 
-// 사진 픽셀을 실제로 훑어 어두운 비율(검정 봉투 추정)·명암 변화(잡동사니 정도)·
-// 녹슨 갈색 톤 비율(파손·노후 추정)을 계산한다. 진짜 Vision AI는 아니지만
-// 최소한 "이 사진에서" 실제로 뽑아낸 값으로 채점하기 위한 경량 분석.
+// 사진 픽셀 통계. 이 값만으로는 "쓰레기"와 "그림자"를 구분할 수 없기 때문에
+// 아주 강한 신호일 때만 후보로 제안하고, 최종 판정은 사용자가 확인한다.
 function analyzeImage(img) {
   const canvas = document.createElement("canvas");
   canvas.width = ANALYSIS_DIM;
@@ -30,10 +29,7 @@ function analyzeImage(img) {
   const { data } = ctx.getImageData(0, 0, ANALYSIS_DIM, ANALYSIS_DIM);
 
   const n = ANALYSIS_DIM * ANALYSIS_DIM;
-  let sumL = 0;
-  let darkCount = 0;
-  let brightCount = 0;
-  let brownCount = 0;
+  let sumL = 0, darkCount = 0, brightCount = 0, brownCount = 0;
   const lumas = new Float32Array(n);
 
   for (let i = 0; i < n; i++) {
@@ -41,44 +37,31 @@ function analyzeImage(img) {
     const l = 0.299 * r + 0.587 * g + 0.114 * b;
     lumas[i] = l;
     sumL += l;
-    if (l < 55) darkCount++;
-    if (l > 205) brightCount++;
-    if (r > g && g >= b && r - b > 18 && l > 40 && l < 150) brownCount++;
+    if (l < 45) darkCount++;
+    if (l > 215) brightCount++;
+    if (r > g && g >= b && r - b > 30 && l > 50 && l < 140) brownCount++;
   }
-
   const avgL = sumL / n;
   let variance = 0;
   for (let i = 0; i < n; i++) variance += (lumas[i] - avgL) ** 2;
-  const stdL = Math.sqrt(variance / n);
 
   return {
     darkRatio: darkCount / n,
     brightRatio: brightCount / n,
     brownRatio: brownCount / n,
-    stdL,
+    stdL: Math.sqrt(variance / n),
   };
 }
 
-function maskAndDraw(img) {
+function drawResized(img) {
   let w = img.width, h = img.height;
   if (w > h && w > MAX_DIM) { h = Math.round((h * MAX_DIM) / w); w = MAX_DIM; }
   else if (h >= w && h > MAX_DIM) { w = Math.round((w * MAX_DIM) / h); h = MAX_DIM; }
-
   const canvas = document.createElement("canvas");
-  canvas.width = w; canvas.height = h;
-  const ctx = canvas.getContext("2d");
-  ctx.drawImage(img, 0, 0, w, h);
-
-  const boxCount = Math.random() < 0.55 ? 1 : 2;
-  ctx.fillStyle = "#111";
-  for (let i = 0; i < boxCount; i++) {
-    const bw = w * (0.14 + Math.random() * 0.1);
-    const bh = bw * (0.55 + Math.random() * 0.3);
-    const bx = Math.random() * (w - bw);
-    const by = Math.random() * (h - bh);
-    ctx.fillRect(bx, by, bw, bh);
-  }
-  return canvas.toDataURL("image/jpeg", 0.82);
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL("image/jpeg", 0.85);
 }
 
 function nearestRegisteredDistance(lat, lng) {
@@ -90,42 +73,7 @@ function nearestRegisteredDistance(lat, lng) {
   return min;
 }
 
-function buildDraft({ addr, dateStr, labels, score, grade, reasons, registered }) {
-  return `[오매! 수거함 제보]
-위치: ${addr}
-촬영일시: ${dateStr}
-상태 분류: ${labels.join(", ")}
-위험도 점수: ${score}점 / 100점 (${grade.emoji} ${grade.label})
-판단 근거:
-${reasons.map((r) => " - " + r).join("\n")}
-표준데이터 등록 여부: ${registered ? "등록" : "미등록 (표준데이터에서 확인되지 않음)"}
-
-해당 의류수거함은 위 사유로 방치·정비가 필요한 상태로 진단되었습니다. 관할 부서의 현장 확인과 정비(또는 철거) 조치를 요청드립니다.
-※ 본 진단은 AI 참고 자료이며, 최종 판단을 위한 현장 확인이 필요합니다.
-(근거: 폐기물관리법 및 관할 지자체 폐기물·의류수거함 관리 조례)`;
-}
-
-export async function runDiagnosis(file, loc, resolvedAddress) {
-  const img = await loadImage(file);
-
-  // 지연 연출 (Vision AI 분석 흉내)
-  await new Promise((r) => setTimeout(r, 1200 + Math.random() * 500));
-
-  const stats = analyzeImage(img);
-  const maskedDataUrl = maskAndDraw(img);
-
-  const dist = nearestRegisteredDistance(loc.lat, loc.lng);
-  const registered = dist <= 40;
-
-  // 관리자 표시 판정은 실제 기획서 방식과 동일하게 "표준데이터 등록 여부"를 1차 기준으로 사용한다.
-  // (사진만으로 연락처 표기를 읽어내는 것은 이 경량 분석으로는 불가능하기 때문)
-  const flags = {
-    noManager: !registered,
-    dump: stats.darkRatio > 0.15 || stats.stdL > 55,
-    satur: stats.brightRatio > 0.22 || (stats.darkRatio > 0.08 && stats.darkRatio <= 0.15),
-    damage: stats.brownRatio > 0.05,
-  };
-
+export function scoreFromFlags(flags) {
   let score = 0;
   const reasons = [];
   const labels = [];
@@ -137,15 +85,48 @@ export async function runDiagnosis(file, loc, resolvedAddress) {
     }
   }
   if (labels.length === 0) labels.push("정상");
+  return { score, reasons, labels, grade: gradeOf(score) };
+}
 
-  const grade = gradeOf(score);
+export function buildDraft({ addr, dateStr, labels, score, grade, reasons, registered }) {
+  return `[오매! 수거함 제보]
+위치: ${addr}
+촬영일시: ${dateStr}
+상태 분류: ${labels.join(", ")}
+위험도 점수: ${score}점 / 100점 (${grade.emoji} ${grade.label})
+판단 근거:
+${reasons.length ? reasons.map((r) => " - " + r).join("\n") : " - 제보자가 확인한 특이사항 없음"}
+표준데이터 등록 여부: ${registered ? "등록" : "미등록 (표준데이터에서 확인되지 않음)"}
+
+해당 의류수거함은 위 사유로 방치·정비가 필요한 상태로 제보되었습니다. 관할 부서의 현장 확인과 정비(또는 철거) 조치를 요청드립니다.
+※ 상태 항목은 제보자가 사진을 보고 직접 확인한 내용입니다.
+(근거: 폐기물관리법 및 관할 지자체 폐기물·의류수거함 관리 조례)`;
+}
+
+export async function runDiagnosis(file, loc, resolvedAddress) {
+  const img = await loadImage(file);
+  await new Promise((r) => setTimeout(r, 900));
+
+  const stats = analyzeImage(img);
+  const photo = drawResized(img);
+
+  const dist = nearestRegisteredDistance(loc.lat, loc.lng);
+  const registered = dist <= 40;
+
+  // 픽셀 통계만으로는 오탐이 많아, 아주 뚜렷한 경우에만 체크 상태로 제안한다.
+  // 관리자 표시 여부는 사진에서 읽어낼 수 없으므로 기본값을 끄고 사용자가 확인한다.
+  const flags = {
+    noManager: false,
+    dump: stats.darkRatio > 0.35 && stats.stdL > 60,
+    satur: stats.brightRatio > 0.4,
+    damage: stats.brownRatio > 0.15,
+  };
+
+  const { score, reasons, labels, grade } = scoreFromFlags(flags);
   const addr = resolvedAddress && resolvedAddress.trim() ? resolvedAddress.trim() : "선택한 위치";
-
   const dateStr = new Date().toLocaleString("ko-KR", {
     year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
   });
-
-  const draft = buildDraft({ addr, dateStr, labels, score, grade, reasons, registered });
 
   return {
     id: `u-${Date.now()}`,
@@ -154,20 +135,13 @@ export async function runDiagnosis(file, loc, resolvedAddress) {
     addr,
     registered,
     isSeed: false,
-    photo: maskedDataUrl,
+    photo,
     createdAt: Date.now(),
-    history: [
-      {
-        date: Date.now(),
-        score,
-        labels,
-        reasons,
-      },
-    ],
+    history: [{ date: Date.now(), score, labels, reasons }],
     flags,
     score,
     grade,
-    draft,
+    draft: buildDraft({ addr, dateStr, labels, score, grade, reasons, registered }),
     reasons,
     labels,
   };

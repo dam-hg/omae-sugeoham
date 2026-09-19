@@ -1,7 +1,7 @@
 import { NEIGHBORHOOD, REGISTERED_BOXES, REGISTERED_DATA_SOURCE } from "./data.js";
 import { getAllReports, getUserReports, addReport, getReportById } from "./store.js";
 import { gradeOf, daysAgo, daysCompact, relTime, toast, escapeHtml, reverseGeocode, formatDateTime } from "./utils.js";
-import { runDiagnosis } from "./diagnose.js";
+import { runDiagnosis, scoreFromFlags, buildDraft } from "./diagnose.js";
 import { loadGovBoxes, getRegionList, searchRegions, getBoxesForRegion, matchRegionFromAddress } from "./govboxes.js";
 
 const app = document.getElementById("app");
@@ -377,7 +377,7 @@ function renderReportForm() {
       <img src="${d.previewUrl}" class="form-photo-thumb" alt="촬영한 사진" />
       <div class="form-photo-info">
         <div class="form-photo-label">촬영한 사진</div>
-        <div class="form-photo-sub">🔒 얼굴·번호판은 진단 시 자동 마스킹돼요</div>
+        <div class="form-photo-sub">다음 화면에서 상태를 확인하고 신고해요</div>
       </div>
     </div>
 
@@ -505,30 +505,147 @@ function renderReportLoading() {
     <div class="loading-wrap">
       <div class="spinner"></div>
       <div class="loading-title">사진을 분석하고 있어요</div>
-      <div class="loading-sub">얼굴·번호판 마스킹 처리 중 🔒<br/>포화·투기물·파손·관리자 표시 진단 중...</div>
+      <div class="loading-sub">사진에서 포화·투기물·파손 흔적을 살펴보는 중...</div>
     </div>
   `;
 }
 
+const CHECK_ITEMS = [
+  { key: "noManager", label: "관리자 표시 없음", pts: 50, hint: "수거함에 관리업체명·연락처가 안 보이나요?" },
+  { key: "dump", label: "주변 투기물 발생", pts: 30, hint: "수거함 주변에 쓰레기가 쌓여 있나요?" },
+  { key: "satur", label: "포화 상태", pts: 10, hint: "투입구가 막히거나 옷이 넘쳐 있나요?" },
+  { key: "damage", label: "파손·노후", pts: 10, hint: "본체가 부서지거나 심하게 녹슬었나요?" },
+];
+
 function renderReportPreview(r) {
+  if (!state.previewFlags) state.previewFlags = { ...r.flags };
+  if (!state.previewMasks) state.previewMasks = [];
+  const flags = state.previewFlags;
+  const { score, grade } = scoreFromFlags(flags);
+  const gaugeColor = grade.key === "danger" ? "#FF5A5F" : grade.key === "warn" ? "#FF9F1C" : "#00C471";
+
   app.innerHTML = `
     <div class="flow-header">
       <button class="back-btn" data-action="home-back">‹</button>
-      <div class="flow-title">진단 리포트</div>
+      <div class="flow-title">진단 결과 확인</div>
     </div>
     <div class="step-dots"><span class="on"></span><span class="on"></span><span class="on"></span></div>
-    ${buildReportDashboard(r)}
+
+    <div class="report-meta">📋 사진을 확인하고 해당하는 항목을 골라주세요</div>
+
+    <div class="result-photo" id="mask-photo-wrap">
+      <img src="${r.photo}" alt="촬영 사진" id="mask-photo" />
+      ${state.previewMasks
+        .map((m) => `<span class="mask-box" style="left:${m.x * 100}%;top:${m.y * 100}%;width:${m.w * 100}%;height:${m.h * 100}%"></span>`)
+        .join("")}
+    </div>
+    <div class="mask-tools">
+      <span class="mask-tools-text">🔒 얼굴·차량번호판이 찍혔다면 사진을 탭해 가려주세요</span>
+      ${state.previewMasks.length ? `<button class="btn-mini" id="mask-clear">지우기</button>` : ""}
+    </div>
+
+    <div class="score-preview" style="border-color:${gaugeColor}">
+      <div class="score-preview-num" style="color:${gaugeColor}">${score}<span>/100점</span></div>
+      <div class="score-preview-grade">${grade.emoji} ${grade.label}</div>
+    </div>
+
+    <div class="checklist-card">
+      ${CHECK_ITEMS.map(
+        (it) => `
+        <label class="check-row ${flags[it.key] ? "on" : ""}">
+          <input type="checkbox" data-flag="${it.key}" ${flags[it.key] ? "checked" : ""} />
+          <span class="check-mid">
+            <span class="check-label">${it.label}</span>
+            <span class="check-hint">${it.hint}</span>
+          </span>
+          <span class="check-pts">+${it.pts}</span>
+        </label>`
+      ).join("")}
+    </div>
+
+    <div class="notice-banner">⚠️ <span>사진 분석은 참고용 제안일 뿐이라 <b>직접 확인한 항목만</b> 체크해주세요. 체크한 내용이 그대로 민원 초안에 들어갑니다.</span></div>
+
     <div class="result-actions">
       <button class="btn btn-primary" id="confirm-report-btn">🚩 신고하기</button>
       <button class="btn btn-outline" id="retry-btn">🔄 다시하기</button>
     </div>
   `;
-  document.getElementById("confirm-report-btn").addEventListener("click", () => {
-    addReport(r);
+
+  app.querySelectorAll("[data-flag]").forEach((cb) =>
+    cb.addEventListener("change", () => {
+      state.previewFlags[cb.dataset.flag] = cb.checked;
+      renderReportPreview(r);
+    })
+  );
+
+  const photoWrap = document.getElementById("mask-photo-wrap");
+  photoWrap.addEventListener("click", (e) => {
+    const rect = photoWrap.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    state.previewMasks.push({ x: Math.max(0, x - 0.09), y: Math.max(0, y - 0.07), w: 0.18, h: 0.14 });
+    renderReportPreview(r);
+  });
+  const clearBtn = document.getElementById("mask-clear");
+  if (clearBtn) {
+    clearBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      state.previewMasks = [];
+      renderReportPreview(r);
+    });
+  }
+
+  document.getElementById("confirm-report-btn").addEventListener("click", async () => {
+    const confirmed = await finalizeReport(r);
+    addReport(confirmed);
+    state.lastResult = confirmed;
+    state.previewFlags = null;
+    state.previewMasks = null;
     state.reportStep = "submitted";
     render();
   });
-  document.getElementById("retry-btn").addEventListener("click", restartReportFlow);
+  document.getElementById("retry-btn").addEventListener("click", () => {
+    state.previewFlags = null;
+    state.previewMasks = null;
+    restartReportFlow();
+  });
+}
+
+// 사용자가 확인한 체크 항목과 직접 지정한 마스킹을 최종 제보에 반영한다.
+async function finalizeReport(r) {
+  const flags = state.previewFlags || r.flags;
+  const { score, reasons, labels, grade } = scoreFromFlags(flags);
+  const photo = state.previewMasks && state.previewMasks.length ? await bakeMasks(r.photo, state.previewMasks) : r.photo;
+  const dateStr = formatDateTime(r.createdAt);
+  return {
+    ...r,
+    photo,
+    flags,
+    score,
+    grade,
+    labels,
+    reasons,
+    history: [{ date: r.createdAt, score, labels, reasons }],
+    draft: buildDraft({ addr: r.addr, dateStr, labels, score, grade, reasons, registered: r.registered }),
+  };
+}
+
+function bakeMasks(photoDataUrl, masks) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      ctx.fillStyle = "#111";
+      masks.forEach((m) => ctx.fillRect(m.x * img.width, m.y * img.height, m.w * img.width, m.h * img.height));
+      resolve(canvas.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = () => resolve(photoDataUrl);
+    img.src = photoDataUrl;
+  });
 }
 
 function renderReportSubmitted(r) {
@@ -612,7 +729,6 @@ function buildReportDashboard(r) {
 
     <div class="result-photo">
       ${photoHtml}
-      <span class="mask-tag">🔒 개인정보 자동 마스킹 처리됨</span>
     </div>
     <div class="chips-row">
       ${labels.map((l) => `<span class="state-chip ${l !== "정상" ? "flag" : ""}">${l}</span>`).join("")}
@@ -690,10 +806,7 @@ function renderMap() {
     renderRegionLoading("전국 표준데이터를 불러오는 중...");
     return;
   }
-  if (!regionState.selected) {
-    renderRegionPrompt();
-    return;
-  }
+  // 지역을 고르지 않았으면 전국 전체 목록을 그대로 보여준다.
   if (regionState.view === "map") renderRegionMap();
   else renderRegionList();
 }
@@ -808,16 +921,6 @@ function regionPickerHtml() {
   `;
 }
 
-function renderRegionPrompt() {
-  app.innerHTML = `
-    <div class="topbar"><div class="brand-wordmark">우리 동네 조회</div></div>
-    ${regionPickerHtml()}
-    <div class="empty-note" style="margin:0 20px;">
-      ${regionState.gpsPending ? "현재 위치를 확인하는 중이에요..." : "현재 위치를 확인하지 못했어요. 검색하거나 아래에서 지역을 선택해보세요."}
-    </div>
-  `;
-  bindRegionControls();
-}
 
 // gov-boxes.json의 dong 필드(지번주소에서 추출, govboxes.js 주석 참고)는 정확도가
 // 높아 그대로 쓴다. 제보 주소(리버스 지오코딩 결과, 공백으로 구분된 형식)는
@@ -841,14 +944,16 @@ function computeDongOptions(sido, sigungu) {
 }
 
 function currentRegionBoxes() {
-  const list = getBoxesForRegion(regionState.boxes, regionState.selected.sido, regionState.selected.sigungu);
+  const sel = regionState.selected;
+  const list = sel ? getBoxesForRegion(regionState.boxes, sel.sido, sel.sigungu) : regionState.boxes;
   if (!regionState.selectedDong) return list;
   return list.filter((b) => b.dong === regionState.selectedDong);
 }
 
 function currentRegionReports() {
-  const sigungu = regionState.selected.sigungu;
-  return getReportsForRegionRaw(sigungu)
+  const sel = regionState.selected;
+  const base = sel ? getReportsForRegionRaw(sel.sigungu) : getAllReports();
+  return base
     .filter((r) => !regionState.selectedDong || extractReportDong(r.addr) === regionState.selectedDong)
     .map((r) => {
       const last = r.history[r.history.length - 1];
@@ -859,11 +964,14 @@ function currentRegionReports() {
 
 function renderRegionHeaderHtml() {
   const sel = regionState.selected;
+  const label = sel
+    ? `${escapeHtml(sel.sido)} ${escapeHtml(sel.sigungu)}${regionState.selectedDong ? ` · ${escapeHtml(regionState.selectedDong)}` : ""}`
+    : "전국 전체";
   return `
     ${regionPickerHtml()}
-    <div class="region-current">📍 <b>${escapeHtml(sel.sido)} ${escapeHtml(sel.sigungu)}</b>${regionState.selectedDong ? ` · ${escapeHtml(regionState.selectedDong)}` : ""}</div>
+    <div class="region-current">📍 <b>${label}</b>${regionState.gpsPending ? ` <span class="region-gps-hint">내 위치 확인 중…</span>` : ""}</div>
     <div class="region-tabs">
-      <button class="region-tab-btn ${regionState.activeList === "gov" ? "active" : ""}" data-list="gov">모든 수거함 <span class="region-tab-count">${currentRegionBoxes().length}</span></button>
+      <button class="region-tab-btn ${regionState.activeList === "gov" ? "active" : ""}" data-list="gov">모든 수거함 <span class="region-tab-count">${currentRegionBoxes().length.toLocaleString()}</span></button>
       <button class="region-tab-btn ${regionState.activeList === "reports" ? "active" : ""}" data-list="reports">신고된 수거함 <span class="region-tab-count">${currentRegionReports().length}</span></button>
     </div>
   `;
@@ -982,6 +1090,12 @@ function bindRegionControls() {
   if (sidoSel) {
     sidoSel.addEventListener("change", () => {
       regionState.pendingSido = sidoSel.value || null;
+      if (!sidoSel.value) {
+        // "시/도"로 되돌리면 전국 전체 목록으로 복귀
+        regionState.selected = null;
+        regionState.selectedDong = null;
+        regionState.dongOptions = [];
+      }
       render();
     });
   }
@@ -1051,17 +1165,20 @@ function renderRegionMap() {
   initRegionMap();
 }
 
+const MAP_MARKER_LIMIT = 800;
+
 function initRegionMap() {
   const el = document.getElementById("dashboard-map");
   if (!el || !window.L) return;
-  const govList = currentRegionBoxes();
+  // 전국 보기에서는 마커가 1만 개를 넘어 렌더링이 버티지 못하므로 상한을 둔다.
+  const govList = currentRegionBoxes().slice(0, MAP_MARKER_LIMIT);
   const reportList = currentRegionReports();
   const points = [...govList.map((b) => [b.lat, b.lng]), ...reportList.map(({ r }) => [r.lat, r.lng])];
   const center = points.length
     ? points.reduce((acc, p) => [acc[0] + p[0] / points.length, acc[1] + p[1] / points.length], [0, 0])
     : NEIGHBORHOOD.center;
 
-  const map = L.map(el, { center, zoom: points.length ? 14 : NEIGHBORHOOD.zoom });
+  const map = L.map(el, { center, zoom: points.length ? (regionState.selected ? 14 : 11) : NEIGHBORHOOD.zoom });
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     attribution: "&copy; OpenStreetMap contributors",
   }).addTo(map);

@@ -494,6 +494,59 @@ input,textarea{font-family:inherit;}
 }
 .state-chip.flag{background:var(--danger-bg);color:var(--danger);}
 
+/* ---------- 진단 확인(체크리스트 + 수동 마스킹) ---------- */
+.mask-box{
+  position:absolute;
+  background:#111;
+  border-radius:2px;
+}
+.mask-tools{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  margin:0 20px 14px;
+}
+.mask-tools-text{font-size:11.5px;color:var(--text-sub);line-height:1.4;}
+.btn-mini{
+  flex:0 0 auto;
+  background:#F0F1F3;border:none;border-radius:16px;
+  padding:6px 12px;font-size:11.5px;font-weight:700;color:var(--text-sub);
+  cursor:pointer;
+}
+.score-preview{
+  margin:0 20px 14px;
+  background:var(--card);
+  border:2px solid var(--line);
+  border-radius:var(--radius-lg);
+  box-shadow:var(--shadow);
+  padding:16px;
+  display:flex;align-items:center;justify-content:space-between;
+}
+.score-preview-num{font-size:30px;font-weight:900;}
+.score-preview-num span{font-size:13px;font-weight:600;color:var(--text-sub);margin-left:2px;}
+.score-preview-grade{font-size:14px;font-weight:800;}
+.checklist-card{
+  margin:0 20px 16px;
+  background:var(--card);
+  border-radius:var(--radius-lg);
+  box-shadow:var(--shadow);
+  padding:4px 16px;
+}
+.check-row{
+  display:flex;align-items:center;gap:12px;
+  padding:14px 0;
+  border-bottom:1px solid var(--line);
+  cursor:pointer;
+}
+.check-row:last-child{border-bottom:none;}
+.check-row input{
+  width:22px;height:22px;flex:0 0 auto;accent-color:#191919;
+}
+.check-mid{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}
+.check-label{font-size:14px;font-weight:700;}
+.check-hint{font-size:11.5px;color:var(--text-sub);line-height:1.4;}
+.check-pts{font-size:13px;font-weight:800;color:var(--text-faint);flex:0 0 auto;}
+.check-row.on .check-pts{color:var(--danger);}
+.region-gps-hint{font-size:11px;font-weight:600;color:var(--text-faint);}
+
 .report-meta{
   margin:0 20px 10px;
   font-size:11.5px;font-weight:700;
