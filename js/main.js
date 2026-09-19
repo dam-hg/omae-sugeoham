@@ -2,7 +2,7 @@ import { NEIGHBORHOOD, REGISTERED_BOXES, REGISTERED_DATA_SOURCE } from "./data.j
 import { getAllReports, getUserReports, addReport, getReportById } from "./store.js";
 import { gradeOf, daysAgo, daysCompact, relTime, toast, escapeHtml, reverseGeocode, formatDateTime } from "./utils.js";
 import { runDiagnosis } from "./diagnose.js";
-import { loadGovBoxes, getRegionList, searchRegions, getBoxesForRegion, DEFAULT_REGION } from "./govboxes.js";
+import { loadGovBoxes, getRegionList, searchRegions, getBoxesForRegion, matchRegionFromAddress } from "./govboxes.js";
 
 const app = document.getElementById("app");
 const bottomnav = document.getElementById("bottomnav");
@@ -21,9 +21,11 @@ const state = {
 const regionState = {
   loaded: false,
   loading: false,
+  gpsPending: false,
+  gpsDone: false,
   boxes: [],
   regionList: [],
-  selected: DEFAULT_REGION,
+  selected: null,
   activeList: "gov", // "gov" | "reports"
   view: "list", // "list" | "map"
   searchQuery: "",
@@ -664,31 +666,83 @@ function bindCopyButtons(r) {
 /* ============================================================ */
 function renderMap() {
   if (!regionState.loaded) {
-    renderRegionLoading();
+    renderRegionLoading("전국 표준데이터를 불러오는 중...");
     if (!regionState.loading) {
       regionState.loading = true;
       loadGovBoxes().then((boxes) => {
         regionState.boxes = boxes;
-        regionState.regionList = getRegionList(boxes);
+        regionState.regionList = getRegionList();
         regionState.loaded = true;
         regionState.loading = false;
-        if (state.tab === "map") render();
+        detectRegionFromGPS();
       });
     }
+    return;
+  }
+  if (!regionState.selected) {
+    renderRegionPrompt();
     return;
   }
   if (regionState.view === "map") renderRegionMap();
   else renderRegionList();
 }
 
-function renderRegionLoading() {
+function detectRegionFromGPS() {
+  if (regionState.selected || regionState.gpsDone) {
+    render();
+    return;
+  }
+  if (!navigator.geolocation) {
+    regionState.gpsDone = true;
+    render();
+    return;
+  }
+  regionState.gpsPending = true;
+  render();
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      try {
+        const addr = await reverseGeocode(pos.coords.latitude, pos.coords.longitude);
+        const match = matchRegionFromAddress(regionState.regionList, addr);
+        if (match) regionState.selected = { sido: match.sido, sigungu: match.sigungu };
+      } catch (e) {
+        /* 위치 인식 실패 시 검색 안내 화면으로 대체 */
+      }
+      regionState.gpsPending = false;
+      regionState.gpsDone = true;
+      if (state.tab === "map") render();
+    },
+    () => {
+      regionState.gpsPending = false;
+      regionState.gpsDone = true;
+      if (state.tab === "map") render();
+    },
+    { timeout: 8000 }
+  );
+}
+
+function renderRegionLoading(message) {
   app.innerHTML = `
     <div class="topbar"><div class="brand-wordmark">우리 동네 조회</div></div>
     <div class="loading-wrap">
       <div class="spinner"></div>
-      <div class="loading-title">전국 표준데이터를 불러오는 중...</div>
+      <div class="loading-title">${message}</div>
     </div>
   `;
+}
+
+function renderRegionPrompt() {
+  app.innerHTML = `
+    <div class="topbar"><div class="brand-wordmark">우리 동네 조회</div></div>
+    <div class="region-search-row">
+      <input type="text" id="region-search" class="region-search-input" placeholder="시/군/구 검색 (예: 강남구)" value="${escapeHtml(regionState.searchQuery)}" />
+    </div>
+    <div id="region-suggest" class="region-suggest ${regionState.searchQuery ? "" : "hidden"}"></div>
+    <div class="empty-note" style="margin:0 20px;">
+      ${regionState.gpsPending ? "현재 위치를 확인하는 중이에요..." : "현재 위치를 확인하지 못했어요. 위 검색창에서 동네를 찾아보세요."}
+    </div>
+  `;
+  bindRegionControls();
 }
 
 function currentRegionBoxes() {
