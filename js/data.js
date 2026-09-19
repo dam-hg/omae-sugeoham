@@ -5,18 +5,19 @@ export const NEIGHBORHOOD = {
   zoom: 16,
 };
 
-// 「전국 의류수거함 표준데이터」에 등록된 것으로 가정한 9개 (기획서 근거자료 수치와 동일)
-export const REGISTERED_BOXES = [
-  { id: "R1", lat: 37.4849, lng: 126.9288, addr: "신림동 1524-3 앞" },
-  { id: "R2", lat: 37.4856, lng: 126.9301, addr: "신림동 1531-10 골목" },
-  { id: "R3", lat: 37.4838, lng: 126.9312, addr: "신림동 1509-2 앞" },
-  { id: "R4", lat: 37.4831, lng: 126.9295, addr: "신림동 1518-7 인근" },
-  { id: "R5", lat: 37.4845, lng: 126.932, addr: "신림동 1540-1 앞" },
-  { id: "R6", lat: 37.4862, lng: 126.9284, addr: "신림동 1502-9 골목" },
-  { id: "R7", lat: 37.4827, lng: 126.9308, addr: "신림동 1512-4 앞" },
-  { id: "R8", lat: 37.4853, lng: 126.9273, addr: "신림동 1496-6 인근" },
-  { id: "R9", lat: 37.484, lng: 126.9333, addr: "신림동 1548-2 앞" },
-];
+// 「전국 의류수거함 표준데이터」(data.go.kr, publicDataPk=15139214) 실제 조회 결과.
+// 조회방법: https://www.data.go.kr/download/standard.json?publicDataPk=15139214&svcTableNm=tn_pubr_public_clothing_collect_bins_svc&perPage=10000&page=1(~2)
+// 스냅샷 기준일 2026-07-27 · 전국 13,975건 중 SGG_NM="관악구" 조회 결과 0건.
+// → 관악구는 이 표준데이터에 단 한 건도 등록돼 있지 않은 지역이라, 목업으로 채우지 않고 빈 배열로 둔다.
+// (신뢰할 수 있는 인증키 기반 실시간 API는 브라우저에서 CORS가 막혀 있어, 정기 스냅샷 갱신 방식을 사용한다.)
+export const REGISTERED_DATA_SOURCE = {
+  name: "전국의류수거함표준데이터",
+  url: "https://www.data.go.kr/data/15139214/standard.do",
+  snapshotDate: "2026-07-27",
+  nationwideTotal: 13975,
+  gwanakCount: 0,
+};
+export const REGISTERED_BOXES = [];
 
 // 실제 현장 조사에서 발견됐지만 표준데이터엔 없는 미등록 수거함 (예시 데이터, 사진은 일러스트로 대체)
 export const SEED_REPORTS = [

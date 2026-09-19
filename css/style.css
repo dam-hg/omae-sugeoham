@@ -169,6 +169,17 @@ input,textarea{font-family:inherit;}
 .stat-card.danger .stat-num{color:var(--danger);}
 .stat-card.info .stat-num{color:var(--info);}
 
+.gov-data-note{
+  margin-top:12px;
+  background:var(--info-bg);
+  color:#1a5bb8;
+  border-radius:12px;
+  padding:10px 12px;
+  font-size:11.5px;
+  line-height:1.5;
+}
+.gov-data-sub{display:block;color:#4a7bc0;font-weight:600;margin-top:2px;}
+
 /* ---------- mini map ---------- */
 .mini-map-wrap{
   position:relative;

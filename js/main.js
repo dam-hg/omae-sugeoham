@@ -1,4 +1,4 @@
-import { NEIGHBORHOOD, REGISTERED_BOXES } from "./data.js";
+import { NEIGHBORHOOD, REGISTERED_BOXES, REGISTERED_DATA_SOURCE } from "./data.js";
 import { getAllReports, getUserReports, addReport, getReportById } from "./store.js";
 import { gradeOf, daysAgo, daysCompact, relTime, toast, escapeHtml, reverseGeocode, formatDateTime } from "./utils.js";
 import { runDiagnosis } from "./diagnose.js";
@@ -121,6 +121,11 @@ function renderHome() {
           <div class="stat-num">${dangerCount}</div>
           <div class="stat-label">정비 시급 🔴</div>
         </div>
+      </div>
+      <div class="gov-data-note">
+        📊 <b>${REGISTERED_DATA_SOURCE.name}</b>(data.go.kr) 기준 · ${NEIGHBORHOOD.name.split(" ")[0]} 등록 수거함
+        <b>${REGISTERED_DATA_SOURCE.gwanakCount}건</b> / 전국 ${REGISTERED_DATA_SOURCE.nationwideTotal.toLocaleString()}건
+        <span class="gov-data-sub">${REGISTERED_DATA_SOURCE.gwanakCount === 0 ? "— 아직 표준데이터가 없는 사각지대예요" : ""} (${REGISTERED_DATA_SOURCE.snapshotDate} 기준)</span>
       </div>
     </div>
 
@@ -654,7 +659,7 @@ function renderMap() {
     <div class="map-view-wrap">
       <div id="dashboard-map"></div>
       <div class="map-legend">
-        <span><span class="legend-dot" style="background:#3182F6"></span>등록(표준데이터)</span>
+        <span><span class="legend-dot" style="background:#3182F6"></span>등록(표준데이터 ${REGISTERED_BOXES.length}건)</span>
         <span><span class="legend-dot" style="background:#00C471"></span>관찰</span>
         <span><span class="legend-dot" style="background:#FF9F1C"></span>정비 권고</span>
         <span><span class="legend-dot" style="background:#FF5A5F"></span>정비 시급</span>
