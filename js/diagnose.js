@@ -1,5 +1,6 @@
 import { haversine, gradeOf } from "./utils.js";
 import { REGISTERED_BOXES, WEIGHTS, REASON_TEXT, LABEL_TEXT } from "./data.js";
+import { analyzePhoto } from "./gemini.js";
 
 const MAX_DIM = 720;
 const ANALYSIS_DIM = 64;
@@ -105,22 +106,27 @@ ${reasons.length ? reasons.map((r) => " - " + r).join("\n") : " - 제보자가 �
 
 export async function runDiagnosis(file, loc, resolvedAddress) {
   const img = await loadImage(file);
-  await new Promise((r) => setTimeout(r, 900));
-
   const stats = analyzeImage(img);
   const photo = drawResized(img);
 
   const dist = nearestRegisteredDistance(loc.lat, loc.lng);
   const registered = dist <= 40;
 
-  // 픽셀 통계만으로는 오탐이 많아, 아주 뚜렷한 경우에만 체크 상태로 제안한다.
-  // 관리자 표시 여부는 사진에서 읽어낼 수 없으므로 기본값을 끄고 사용자가 확인한다.
-  const flags = {
+  // 1순위: Gemini Vision 판독. 실패하면 픽셀 통계로 아주 뚜렷한 경우만 제안한다.
+  // 어느 쪽이든 최종 확정은 사용자가 체크리스트로 확인한다.
+  let flags = {
     noManager: false,
     dump: stats.darkRatio > 0.35 && stats.stdL > 60,
     satur: stats.brightRatio > 0.4,
     damage: stats.brownRatio > 0.15,
   };
+  let ai = { ok: false };
+  try {
+    ai = await analyzePhoto(photo);
+    if (ai.ok) flags = ai.flags;
+  } catch (e) {
+    console.warn("vision 분석 실패, 기본 제안값 사용", e);
+  }
 
   const { score, reasons, labels, grade } = scoreFromFlags(flags);
   const addr = resolvedAddress && resolvedAddress.trim() ? resolvedAddress.trim() : "선택한 위치";
@@ -141,6 +147,9 @@ export async function runDiagnosis(file, loc, resolvedAddress) {
     flags,
     score,
     grade,
+    aiUsed: !!ai.ok,
+    aiSummary: ai.ok ? ai.summary : "",
+    aiBinFound: ai.ok ? ai.binFound : true,
     draft: buildDraft({ addr, dateStr, labels, score, grade, reasons, registered }),
     reasons,
     labels,

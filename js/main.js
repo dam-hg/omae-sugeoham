@@ -141,7 +141,8 @@ function renderHome() {
   const homeReports = regionState.selected ? getReportsForRegionRaw(regionState.selected.sigungu) : getAllReports();
   const unregCount = homeReports.length;
   const dangerCount = homeReports.filter((r) => currentGrade(r).key === "danger").length;
-  const recent = [...homeReports].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 5);
+  const recentPool = homeReports.length ? homeReports : getAllReports();
+  const recent = [...recentPool].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 5);
 
   app.innerHTML = `
     <div class="topbar">
@@ -150,7 +151,6 @@ function renderHome() {
     <div class="topbar-sub">사진 한 장으로 시작하는 우리 동네 방치수거함 신고</div>
 
     <div class="cta-card" data-action="go-report">
-      <div class="cta-eyebrow">🚩 방치 수거함 발견!</div>
       <p class="cta-title">쓰레기장 된 의류수거함,<br/>사진 한 장으로 신고하기</p>
       <div class="cta-arrow">›</div>
     </div>
@@ -558,6 +558,14 @@ function renderReportPreview(r) {
     <div class="step-dots"><span class="on"></span><span class="on"></span><span class="on"></span></div>
 
     <div class="report-meta">📋 사진을 확인하고 해당하는 항목을 골라주세요</div>
+    ${
+      r.aiUsed
+        ? `<div class="ai-summary ${r.aiBinFound ? "" : "warn"}">
+             <b>${r.aiBinFound ? "🤖 AI 판독" : "🤖 수거함을 찾지 못했어요"}</b>
+             <span>${escapeHtml(r.aiSummary || "사진에서 확인된 내용을 아래 항목으로 제안했어요")}</span>
+           </div>`
+        : ""
+    }
 
     <div class="result-photo" id="mask-photo-wrap">
       <img src="${r.photo}" alt="촬영 사진" id="mask-photo" />
@@ -1193,14 +1201,17 @@ function renderRegionMap() {
         <span><span class="legend-dot" style="background:#FF9F1C"></span>정비 권고</span>
         <span><span class="legend-dot" style="background:#FF5A5F"></span>정비 시급</span>
       </div>
+      <button class="map-back-btn" id="to-list-top">‹ 목록으로</button>
       <button class="search-here-btn hidden" id="search-here">🔍 이 지역에서 검색하기</button>
-      <button class="list-toggle-btn" id="to-list-view">📋 목록으로</button>
+      <button class="list-toggle-btn" id="to-list-view">📋 목록으로 돌아가기</button>
     </div>
   `;
-  document.getElementById("to-list-view").addEventListener("click", () => {
+  const backToList = () => {
     regionState.view = "list";
     render();
-  });
+  };
+  document.getElementById("to-list-view").addEventListener("click", backToList);
+  document.getElementById("to-list-top").addEventListener("click", backToList);
   initRegionMap();
 }
 
