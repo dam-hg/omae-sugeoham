@@ -34,6 +34,7 @@ const regionState = {
   activeList: "gov", // "gov" | "reports"
   view: "list", // "list" | "map"
   searchQuery: "",
+  boundsFilter: null, // 지도에서 "이 지역에서 검색하기"로 지정한 영역
   visibleCount: REGION_PAGE_SIZE,
 };
 
@@ -104,7 +105,33 @@ function render() {
   else if (state.tab === "report") renderReport();
   else if (state.tab === "map") renderMap();
   else if (state.tab === "mypage") renderMypage();
+  playViewEnter();
   window.scrollTo(0, 0);
+}
+
+// 화면이 바뀔 때마다 살짝 올라오며 나타나는 전환 모션을 재생한다.
+function playViewEnter() {
+  app.classList.remove("view-enter");
+  void app.offsetWidth;
+  app.classList.add("view-enter");
+}
+
+// 신고 완료처럼 성취감을 줘야 하는 순간에 화면 중앙에 크게 띄우는 연출.
+function showCelebration(title, sub) {
+  const el = document.createElement("div");
+  el.className = "celebrate";
+  el.innerHTML = `
+    <div class="celebrate-inner">
+      <div class="celebrate-icon">🎉</div>
+      <div class="celebrate-title">${title}</div>
+      <div class="celebrate-sub">${sub}</div>
+    </div>
+  `;
+  document.body.appendChild(el);
+  setTimeout(() => {
+    el.classList.add("out");
+    setTimeout(() => el.remove(), 320);
+  }, 1500);
 }
 
 /* ============================================================ */
@@ -120,12 +147,11 @@ function renderHome() {
     <div class="topbar">
       <div class="brand-wordmark">오매<span>!</span> 수거함</div>
     </div>
-    <div class="topbar-sub">사진 한 장으로 시작하는 우리 동네 수거함 지도</div>
+    <div class="topbar-sub">사진 한 장으로 시작하는 우리 동네 방치수거함 신고</div>
 
     <div class="cta-card" data-action="go-report">
       <div class="cta-eyebrow">🚩 방치 수거함 발견!</div>
       <p class="cta-title">쓰레기장 된 의류수거함,<br/>사진 한 장으로 신고하기</p>
-      <p class="cta-sub">AI가 30초 만에 위험도를 진단해드려요</p>
       <div class="cta-arrow">›</div>
     </div>
 
@@ -539,9 +565,10 @@ function renderReportPreview(r) {
         .map((m) => `<span class="mask-box" style="left:${m.x * 100}%;top:${m.y * 100}%;width:${m.w * 100}%;height:${m.h * 100}%"></span>`)
         .join("")}
     </div>
-    <div class="mask-tools">
-      <span class="mask-tools-text">🔒 얼굴·차량번호판이 찍혔다면 사진을 탭해 가려주세요</span>
-      ${state.previewMasks.length ? `<button class="btn-mini" id="mask-clear">지우기</button>` : ""}
+    <div class="mask-guide">
+      <div class="mask-guide-main">🔒 사람 얼굴이나 차량 번호판이 찍혔나요?</div>
+      <div class="mask-guide-sub">사진에서 <b>가리고 싶은 곳을 탭</b>하면 검게 가려집니다${state.previewMasks.length ? ` · 현재 ${state.previewMasks.length}곳` : ""}</div>
+      ${state.previewMasks.length ? `<button class="btn-mini" id="mask-clear">전부 지우기</button>` : ""}
     </div>
 
     <div class="score-preview" style="border-color:${gaugeColor}">
@@ -583,7 +610,7 @@ function renderReportPreview(r) {
     const rect = photoWrap.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
-    state.previewMasks.push({ x: Math.max(0, x - 0.09), y: Math.max(0, y - 0.07), w: 0.18, h: 0.14 });
+    state.previewMasks.push({ x: Math.max(0, x - 0.045), y: Math.max(0, y - 0.035), w: 0.09, h: 0.07 });
     renderReportPreview(r);
   });
   const clearBtn = document.getElementById("mask-clear");
@@ -603,6 +630,7 @@ function renderReportPreview(r) {
     state.previewMasks = null;
     state.reportStep = "submitted";
     render();
+    showCelebration("신고 데이터가 쌓였어요!", "당신의 제보가 우리 동네 기록이 됐어요");
   });
   document.getElementById("retry-btn").addEventListener("click", () => {
     state.previewFlags = null;
@@ -659,7 +687,7 @@ function renderReportSubmitted(r) {
     </div>
     <div class="step-dots"><span class="on"></span><span class="on"></span><span class="on"></span></div>
 
-    <div class="submit-success">✅ 제보가 저장됐어요!</div>
+    <div class="submit-success">✅ 신고 데이터가 쌓였어요!</div>
 
     <div class="impact-banner">
       <div class="impact-title">📢 민원이 쌓일수록, 정비는 빨라집니다</div>
@@ -830,6 +858,7 @@ function refreshIfIdle() {
 
 function selectRegion(sido, sigungu) {
   regionState.selected = { sido, sigungu };
+  regionState.boundsFilter = null;
   regionState.pendingSido = null;
   regionState.selectedDong = null;
   regionState.dongOptions = computeDongOptions(sido, sigungu);
@@ -943,16 +972,23 @@ function computeDongOptions(sido, sigungu) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([name]) => name).slice(0, 14);
 }
 
+function inBounds(lat, lng) {
+  const b = regionState.boundsFilter;
+  return lat >= b.south && lat <= b.north && lng >= b.west && lng <= b.east;
+}
+
 function currentRegionBoxes() {
   const sel = regionState.selected;
-  const list = sel ? getBoxesForRegion(regionState.boxes, sel.sido, sel.sigungu) : regionState.boxes;
+  let list = sel ? getBoxesForRegion(regionState.boxes, sel.sido, sel.sigungu) : regionState.boxes;
+  if (regionState.boundsFilter) list = list.filter((b) => inBounds(b.lat, b.lng));
   if (!regionState.selectedDong) return list;
   return list.filter((b) => b.dong === regionState.selectedDong);
 }
 
 function currentRegionReports() {
   const sel = regionState.selected;
-  const base = sel ? getReportsForRegionRaw(sel.sigungu) : getAllReports();
+  let base = sel ? getReportsForRegionRaw(sel.sigungu) : getAllReports();
+  if (regionState.boundsFilter) base = base.filter((r) => inBounds(r.lat, r.lng));
   return base
     .filter((r) => !regionState.selectedDong || extractReportDong(r.addr) === regionState.selectedDong)
     .map((r) => {
@@ -964,7 +1000,9 @@ function currentRegionReports() {
 
 function renderRegionHeaderHtml() {
   const sel = regionState.selected;
-  const label = sel
+  const label = regionState.boundsFilter
+    ? "지도에서 선택한 영역"
+    : sel
     ? `${escapeHtml(sel.sido)} ${escapeHtml(sel.sigungu)}${regionState.selectedDong ? ` · ${escapeHtml(regionState.selectedDong)}` : ""}`
     : "전국 전체";
   return `
@@ -1155,6 +1193,7 @@ function renderRegionMap() {
         <span><span class="legend-dot" style="background:#FF9F1C"></span>정비 권고</span>
         <span><span class="legend-dot" style="background:#FF5A5F"></span>정비 시급</span>
       </div>
+      <button class="search-here-btn hidden" id="search-here">🔍 이 지역에서 검색하기</button>
       <button class="list-toggle-btn" id="to-list-view">📋 목록으로</button>
     </div>
   `;
@@ -1166,11 +1205,11 @@ function renderRegionMap() {
 }
 
 const MAP_MARKER_LIMIT = 800;
+let regionMarkerLayer = null;
 
 function initRegionMap() {
   const el = document.getElementById("dashboard-map");
   if (!el || !window.L) return;
-  // 전국 보기에서는 마커가 1만 개를 넘어 렌더링이 버티지 못하므로 상한을 둔다.
   const govList = currentRegionBoxes().slice(0, MAP_MARKER_LIMIT);
   const reportList = currentRegionReports();
   const points = [...govList.map((b) => [b.lat, b.lng]), ...reportList.map(({ r }) => [r.lat, r.lng])];
@@ -1178,15 +1217,49 @@ function initRegionMap() {
     ? points.reduce((acc, p) => [acc[0] + p[0] / points.length, acc[1] + p[1] / points.length], [0, 0])
     : NEIGHBORHOOD.center;
 
-  const map = L.map(el, { center, zoom: points.length ? (regionState.selected ? 14 : 11) : NEIGHBORHOOD.zoom });
+  const zoom = regionState.boundsFilter ? 14 : points.length ? (regionState.selected ? 14 : 11) : NEIGHBORHOOD.zoom;
+  const map = L.map(el, { center, zoom });
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     attribution: "&copy; OpenStreetMap contributors",
   }).addTo(map);
 
+  regionMarkerLayer = L.layerGroup().addTo(map);
+  drawRegionMarkers(govList, reportList);
+
+  map.on("popupopen", (e) => {
+    const btn = e.popup._contentNode.querySelector("[data-open-report]");
+    if (btn) btn.addEventListener("click", () => openReportModal(btn.dataset.openReport));
+  });
+
+  // 지도를 움직이면 그 화면 기준으로 다시 검색할 수 있게 버튼을 띄운다.
+  const searchBtn = document.getElementById("search-here");
+  map.on("movestart", () => searchBtn && searchBtn.classList.remove("hidden"));
+  if (searchBtn) {
+    searchBtn.addEventListener("click", () => {
+      const b = map.getBounds();
+      regionState.boundsFilter = { north: b.getNorth(), south: b.getSouth(), east: b.getEast(), west: b.getWest() };
+      regionState.selected = null;
+      regionState.selectedDong = null;
+      regionState.dongOptions = [];
+      const nextGov = currentRegionBoxes().slice(0, MAP_MARKER_LIMIT);
+      const nextReports = currentRegionReports();
+      drawRegionMarkers(nextGov, nextReports);
+      searchBtn.classList.add("hidden");
+      toast(`이 영역에서 ${nextGov.length.toLocaleString()}곳을 찾았어요`);
+    });
+  }
+
+  maps.dashboard = map;
+}
+
+function drawRegionMarkers(govList, reportList) {
+  if (!regionMarkerLayer) return;
+  regionMarkerLayer.clearLayers();
+
   govList.forEach((b) => {
     const m = L.circleMarker([b.lat, b.lng], {
       radius: 7, color: "#fff", weight: 2, fillColor: "#3182F6", fillOpacity: 1,
-    }).addTo(map);
+    }).addTo(regionMarkerLayer);
     m.bindPopup(`<div class="popup-title">🔵 등록 수거함</div>${escapeHtml(b.name || b.addr)}<br/>${escapeHtml(b.addr)}`);
   });
 
@@ -1194,7 +1267,7 @@ function initRegionMap() {
     const color = g.key === "danger" ? "#FF5A5F" : g.key === "warn" ? "#FF9F1C" : "#00C471";
     const m = L.circleMarker([r.lat, r.lng], {
       radius: 9, color: "#fff", weight: 2, fillColor: color, fillOpacity: 1,
-    }).addTo(map);
+    }).addTo(regionMarkerLayer);
     const thumb = r.isSeed
       ? `<div class="popup-thumb" style="display:flex;align-items:center;justify-content:center;font-size:28px;background:${r.illustBg}">${r.illust}</div>`
       : `<img class="popup-thumb" src="${r.photo}" />`;
@@ -1206,13 +1279,6 @@ function initRegionMap() {
       <div class="popup-btn" data-open-report="${r.id}">민원 초안 보기</div>
     `);
   });
-
-  map.on("popupopen", (e) => {
-    const btn = e.popup._contentNode.querySelector("[data-open-report]");
-    if (btn) btn.addEventListener("click", () => openReportModal(btn.dataset.openReport));
-  });
-
-  maps.dashboard = map;
 }
 
 /* ============================================================ */

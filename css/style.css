@@ -27,10 +27,11 @@ html,body{height:100%;}
 body{
   margin:0;
   background:#E8E9EC;
-  font-family:"Apple SD Gothic Neo","Malgun Gothic","Gowun Dodum",-apple-system,BlinkMacSystemFont,sans-serif;
+  font-family:"Pretendard Variable",Pretendard,-apple-system,BlinkMacSystemFont,system-ui,"Apple SD Gothic Neo",Roboto,"Noto Sans KR","Malgun Gothic",sans-serif;
   color:var(--text);
   -webkit-font-smoothing:antialiased;
 }
+input,textarea,select,button{font-family:inherit;}
 
 #phone{
   max-width:430px;
@@ -494,21 +495,82 @@ input,textarea{font-family:inherit;}
 }
 .state-chip.flag{background:var(--danger-bg);color:var(--danger);}
 
+/* ---------- 화면 전환 · 버튼 모션 ---------- */
+@keyframes view-enter{
+  from{opacity:0;transform:translateY(14px);}
+  to{opacity:1;transform:translateY(0);}
+}
+#app.view-enter{animation:view-enter .28s cubic-bezier(.22,.9,.3,1);}
+
+.btn,.region-tab-btn,.dong-chip,.map-toggle-fab,.list-toggle-btn,.search-here-btn,.cta-card,.nav-fab,.btn-mini{
+  transition:transform .12s cubic-bezier(.2,.8,.3,1), filter .12s ease, box-shadow .12s ease;
+}
+.btn:active,.region-tab-btn:active,.map-toggle-fab:active,.btn-mini:active{
+  transform:scale(0.95);
+  filter:brightness(0.96);
+}
+/* 가운데 정렬(translateX)을 쓰는 버튼은 정렬을 유지한 채 눌린 느낌만 준다 */
+.list-toggle-btn:active,.search-here-btn:active{
+  transform:translateX(-50%) scale(0.95);
+  filter:brightness(0.96);
+}
+.region-row:active,.ticker-row:active,.my-report-row:active,.region-suggest-row:active{
+  transform:scale(0.985);
+  transition:transform .1s ease;
+}
+
+/* ---------- 신고 완료 축하 연출 ---------- */
+@keyframes celebrate-pop{
+  0%{opacity:0;transform:scale(0.6);}
+  55%{opacity:1;transform:scale(1.08);}
+  100%{opacity:1;transform:scale(1);}
+}
+@keyframes celebrate-icon{
+  0%{transform:scale(0.4) rotate(-18deg);}
+  60%{transform:scale(1.25) rotate(8deg);}
+  100%{transform:scale(1) rotate(0);}
+}
+.celebrate{
+  position:fixed;inset:0;z-index:3000;
+  display:flex;align-items:center;justify-content:center;
+  background:rgba(15,15,20,0.55);
+  backdrop-filter:blur(3px);
+  transition:opacity .3s ease;
+}
+.celebrate.out{opacity:0;}
+.celebrate-inner{
+  text-align:center;padding:0 30px;
+  animation:celebrate-pop .5s cubic-bezier(.2,1.1,.3,1) both;
+}
+.celebrate-icon{font-size:72px;animation:celebrate-icon .6s cubic-bezier(.2,1.2,.3,1) both;}
+.celebrate-title{
+  margin-top:10px;
+  font-size:30px;font-weight:900;color:#fff;
+  letter-spacing:-0.6px;line-height:1.3;
+  text-shadow:0 4px 20px rgba(0,0,0,0.35);
+}
+.celebrate-sub{margin-top:10px;font-size:14px;font-weight:600;color:rgba(255,255,255,0.88);}
+
 /* ---------- 진단 확인(체크리스트 + 수동 마스킹) ---------- */
 .mask-box{
   position:absolute;
   background:#111;
   border-radius:2px;
 }
-.mask-tools{
-  display:flex;align-items:center;justify-content:space-between;gap:8px;
+.mask-guide{
   margin:0 20px 14px;
+  background:var(--info-bg);
+  border:1.5px solid #BBD5FF;
+  border-radius:14px;
+  padding:14px 16px;
 }
-.mask-tools-text{font-size:11.5px;color:var(--text-sub);line-height:1.4;}
+.mask-guide-main{font-size:14px;font-weight:800;color:#1A5BB8;margin-bottom:4px;}
+.mask-guide-sub{font-size:12.5px;color:#3C6FB5;line-height:1.5;}
+.mask-guide-sub b{font-weight:800;}
+.mask-guide .btn-mini{margin-top:10px;}
 .btn-mini{
-  flex:0 0 auto;
-  background:#F0F1F3;border:none;border-radius:16px;
-  padding:6px 12px;font-size:11.5px;font-weight:700;color:var(--text-sub);
+  background:#fff;border:1px solid #BBD5FF;border-radius:16px;
+  padding:7px 14px;font-size:12px;font-weight:700;color:#1A5BB8;
   cursor:pointer;
 }
 .score-preview{
@@ -695,6 +757,19 @@ input,textarea{font-family:inherit;}
   flex-wrap:wrap;
 }
 .legend-dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:4px;}
+.search-here-btn{
+  position:absolute;
+  bottom:74px;left:50%;transform:translateX(-50%);
+  z-index:402;
+  background:#fff;color:var(--text);
+  border:1.5px solid var(--line);border-radius:30px;
+  padding:12px 20px;
+  font-size:13.5px;font-weight:800;
+  box-shadow:var(--shadow-lift);
+  cursor:pointer;white-space:nowrap;
+  animation:view-enter .25s ease;
+}
+
 .list-toggle-btn{
   position:absolute;
   bottom:16px;left:50%;transform:translateX(-50%);
