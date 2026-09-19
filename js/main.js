@@ -18,6 +18,8 @@ const state = {
   lastResult: null,
 };
 
+const REGION_PAGE_SIZE = 10;
+
 const regionState = {
   loaded: false,
   loading: false,
@@ -26,11 +28,13 @@ const regionState = {
   boxes: [],
   regionList: [],
   selected: null,
+  pendingSido: null, // 시/군/구 드롭다운에서 시/도만 고르고 아직 구를 안 고른 상태
   selectedDong: null, // null = 전체
   dongOptions: [],
   activeList: "gov", // "gov" | "reports"
   view: "list", // "list" | "map"
   searchQuery: "",
+  visibleCount: REGION_PAGE_SIZE,
 };
 
 const maps = { home: null, pin: null, dashboard: null };
@@ -91,6 +95,7 @@ function updateNavActive() {
 function render() {
   destroyAllMaps();
   stopCameraStream();
+  detachRegionScroll();
   const fullBleed =
     (state.tab === "map" && regionState.view === "map") ||
     (state.tab === "report" && state.reportStep === "camera");
@@ -712,8 +717,19 @@ function refreshIfIdle() {
 
 function selectRegion(sido, sigungu) {
   regionState.selected = { sido, sigungu };
+  regionState.pendingSido = null;
   regionState.selectedDong = null;
   regionState.dongOptions = computeDongOptions(sido, sigungu);
+  regionState.activeList = "gov"; // 지역을 고르면 표준데이터 목록부터 바로 보여준다
+  regionState.view = "list";
+  regionState.visibleCount = REGION_PAGE_SIZE;
+}
+
+function getSidoList() {
+  return [...new Set(regionState.regionList.map((r) => r.sido))];
+}
+function getSigunguListForSido(sido) {
+  return regionState.regionList.filter((r) => r.sido === sido).map((r) => r.sigungu);
 }
 
 function detectRegionFromGPS() {
@@ -760,15 +776,44 @@ function renderRegionLoading(message) {
   `;
 }
 
-function renderRegionPrompt() {
-  app.innerHTML = `
-    <div class="topbar"><div class="brand-wordmark">우리 동네 조회</div></div>
+function regionPickerHtml() {
+  const sel = regionState.selected;
+  const currentSido = regionState.pendingSido || (sel && sel.sido) || "";
+  const sigunguList = currentSido ? getSigunguListForSido(currentSido) : [];
+  return `
     <div class="region-search-row">
       <input type="text" id="region-search" class="region-search-input" placeholder="시/군/구 검색 (예: 강남구)" value="${escapeHtml(regionState.searchQuery)}" />
     </div>
     <div id="region-suggest" class="region-suggest ${regionState.searchQuery ? "" : "hidden"}"></div>
+    <div class="region-select-row">
+      <select id="sido-select" class="region-select">
+        <option value="">시/도</option>
+        ${getSidoList()
+          .map((s) => `<option value="${escapeHtml(s)}" ${currentSido === s ? "selected" : ""}>${escapeHtml(s)}</option>`)
+          .join("")}
+      </select>
+      <select id="sigungu-select" class="region-select" ${sigunguList.length ? "" : "disabled"}>
+        <option value="">시/군/구</option>
+        ${sigunguList
+          .map((g) => `<option value="${escapeHtml(g)}" ${sel && sel.sigungu === g ? "selected" : ""}>${escapeHtml(g)}</option>`)
+          .join("")}
+      </select>
+      <select id="dong-select" class="region-select" ${regionState.dongOptions.length ? "" : "disabled"}>
+        <option value="">동 전체</option>
+        ${regionState.dongOptions
+          .map((d) => `<option value="${escapeHtml(d)}" ${regionState.selectedDong === d ? "selected" : ""}>${escapeHtml(d)}</option>`)
+          .join("")}
+      </select>
+    </div>
+  `;
+}
+
+function renderRegionPrompt() {
+  app.innerHTML = `
+    <div class="topbar"><div class="brand-wordmark">우리 동네 조회</div></div>
+    ${regionPickerHtml()}
     <div class="empty-note" style="margin:0 20px;">
-      ${regionState.gpsPending ? "현재 위치를 확인하는 중이에요..." : "현재 위치를 확인하지 못했어요. 위 검색창에서 동네를 찾아보세요."}
+      ${regionState.gpsPending ? "현재 위치를 확인하는 중이에요..." : "현재 위치를 확인하지 못했어요. 검색하거나 아래에서 지역을 선택해보세요."}
     </div>
   `;
   bindRegionControls();
@@ -814,22 +859,9 @@ function currentRegionReports() {
 
 function renderRegionHeaderHtml() {
   const sel = regionState.selected;
-  const dongChips = regionState.dongOptions.length
-    ? `
-    <div class="dong-chip-row">
-      <button class="dong-chip ${!regionState.selectedDong ? "active" : ""}" data-dong="">전체</button>
-      ${regionState.dongOptions
-        .map((d) => `<button class="dong-chip ${regionState.selectedDong === d ? "active" : ""}" data-dong="${escapeHtml(d)}">${escapeHtml(d)}</button>`)
-        .join("")}
-    </div>`
-    : "";
   return `
-    <div class="region-search-row">
-      <input type="text" id="region-search" class="region-search-input" placeholder="시/군/구 검색 (예: 강남구)" value="${escapeHtml(regionState.searchQuery)}" />
-    </div>
-    <div id="region-suggest" class="region-suggest ${regionState.searchQuery ? "" : "hidden"}"></div>
-    <div class="region-current">📍 <b>${escapeHtml(sel.sido)} ${escapeHtml(sel.sigungu)}</b></div>
-    ${dongChips}
+    ${regionPickerHtml()}
+    <div class="region-current">📍 <b>${escapeHtml(sel.sido)} ${escapeHtml(sel.sigungu)}</b>${regionState.selectedDong ? ` · ${escapeHtml(regionState.selectedDong)}` : ""}</div>
     <div class="region-tabs">
       <button class="region-tab-btn ${regionState.activeList === "gov" ? "active" : ""}" data-list="gov">모든 수거함 <span class="region-tab-count">${currentRegionBoxes().length}</span></button>
       <button class="region-tab-btn ${regionState.activeList === "reports" ? "active" : ""}" data-list="reports">신고된 수거함 <span class="region-tab-count">${currentRegionReports().length}</span></button>
@@ -837,22 +869,30 @@ function renderRegionHeaderHtml() {
   `;
 }
 
+let regionScrollHandler = null;
+function detachRegionScroll() {
+  if (regionScrollHandler) {
+    window.removeEventListener("scroll", regionScrollHandler);
+    regionScrollHandler = null;
+  }
+}
+
 function renderRegionList() {
-  const govList = currentRegionBoxes();
-  const reportList = currentRegionReports();
-  const rows =
-    regionState.activeList === "gov"
-      ? govList.length
-        ? govList.map(govRowHtml).join("")
-        : `<div class="empty-note">이 지역엔 표준데이터에 등록된 수거함이 없어요.</div>`
-      : reportList.length
-      ? reportList.map(reportRowHtml).join("")
-      : `<div class="empty-note">이 지역엔 아직 신고된 수거함이 없어요.</div>`;
+  regionState.visibleCount = REGION_PAGE_SIZE;
+
+  const isGov = regionState.activeList === "gov";
+  const fullList = isGov ? currentRegionBoxes() : currentRegionReports();
+  const rowFn = isGov ? govRowHtml : reportRowHtml;
+  const emptyMsg = isGov ? "이 지역엔 표준데이터에 등록된 수거함이 없어요." : "이 지역엔 아직 신고된 수거함이 없어요.";
+  const visible = fullList.slice(0, regionState.visibleCount);
+  const rows = visible.length ? visible.map(rowFn).join("") : `<div class="empty-note">${emptyMsg}</div>`;
+  const hasMore = fullList.length > regionState.visibleCount;
 
   app.innerHTML = `
     <div class="topbar"><div class="brand-wordmark">우리 동네 조회</div></div>
     ${renderRegionHeaderHtml()}
-    <div class="region-list">${rows}</div>
+    <div class="region-list" id="region-list">${rows}</div>
+    ${hasMore ? `<div class="region-list-loading" id="region-list-loading">더 불러오는 중...</div>` : ""}
     <div class="map-toggle-fab-wrap"><button class="map-toggle-fab" id="to-map-view">🗺️ 지도로 보기</button></div>
   `;
 
@@ -861,6 +901,38 @@ function renderRegionList() {
     regionState.view = "map";
     render();
   });
+
+  const listEl = document.getElementById("region-list");
+  if (listEl) {
+    listEl.addEventListener("click", (e) => {
+      const el = e.target.closest("[data-open-report]");
+      if (el) openReportModal(el.dataset.openReport);
+    });
+  }
+
+  attachRegionScroll(fullList, rowFn);
+}
+
+function attachRegionScroll(fullList, rowFn) {
+  detachRegionScroll();
+  if (fullList.length <= regionState.visibleCount) return;
+  regionScrollHandler = () => {
+    if (window.scrollY + window.innerHeight < document.body.scrollHeight - 300) return;
+    if (regionState.visibleCount >= fullList.length) {
+      detachRegionScroll();
+      return;
+    }
+    const next = fullList.slice(regionState.visibleCount, regionState.visibleCount + REGION_PAGE_SIZE);
+    regionState.visibleCount += REGION_PAGE_SIZE;
+    const listEl = document.getElementById("region-list");
+    if (listEl) listEl.insertAdjacentHTML("beforeend", next.map(rowFn).join(""));
+    if (regionState.visibleCount >= fullList.length) {
+      detachRegionScroll();
+      const loadingEl = document.getElementById("region-list-loading");
+      if (loadingEl) loadingEl.remove();
+    }
+  };
+  window.addEventListener("scroll", regionScrollHandler);
 }
 
 function govRowHtml(b) {
@@ -903,16 +975,32 @@ function bindRegionControls() {
     })
   );
 
-  app.querySelectorAll(".dong-chip").forEach((btn) =>
-    btn.addEventListener("click", () => {
-      regionState.selectedDong = btn.dataset.dong || null;
-      renderRegionList();
-    })
-  );
+  const sidoSel = document.getElementById("sido-select");
+  const sigunguSel = document.getElementById("sigungu-select");
+  const dongSel = document.getElementById("dong-select");
 
-  app.querySelectorAll("[data-open-report]").forEach((el) =>
-    el.addEventListener("click", () => openReportModal(el.dataset.openReport))
-  );
+  if (sidoSel) {
+    sidoSel.addEventListener("change", () => {
+      regionState.pendingSido = sidoSel.value || null;
+      render();
+    });
+  }
+  if (sigunguSel) {
+    sigunguSel.addEventListener("change", () => {
+      const sido = regionState.pendingSido || (regionState.selected && regionState.selected.sido);
+      const sigungu = sigunguSel.value;
+      if (!sido || !sigungu) return;
+      selectRegion(sido, sigungu);
+      regionState.searchQuery = "";
+      render();
+    });
+  }
+  if (dongSel) {
+    dongSel.addEventListener("change", () => {
+      regionState.selectedDong = dongSel.value || null;
+      renderRegionList();
+    });
+  }
 }
 
 function renderRegionSuggestions() {
