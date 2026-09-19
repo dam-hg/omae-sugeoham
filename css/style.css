@@ -690,6 +690,23 @@ input,textarea{font-family:inherit;}
   padding:0 20px 10px;
   font-size:15px;font-weight:800;
 }
+.dong-chip-row{
+  display:flex;gap:6px;
+  overflow-x:auto;
+  padding:0 20px 12px;
+  scrollbar-width:none;
+}
+.dong-chip-row::-webkit-scrollbar{display:none;}
+.dong-chip{
+  flex:0 0 auto;
+  background:#fff;color:var(--text-sub);
+  border:1.5px solid var(--line);border-radius:20px;
+  padding:7px 13px;
+  font-size:12px;font-weight:700;
+  cursor:pointer;white-space:nowrap;
+}
+.dong-chip.active{background:#191919;color:#fff;border-color:#191919;}
+
 .region-tabs{
   display:flex;gap:8px;
   padding:0 20px 12px;

@@ -26,6 +26,8 @@ const regionState = {
   boxes: [],
   regionList: [],
   selected: null,
+  selectedDong: null, // null = 전체
+  dongOptions: [],
   activeList: "gov", // "gov" | "reports"
   view: "list", // "list" | "map"
   searchQuery: "",
@@ -104,10 +106,10 @@ function render() {
 /* HOME                                                          */
 /* ============================================================ */
 function renderHome() {
-  const all = getAllReports();
-  const unregCount = all.length;
-  const dangerCount = all.filter((r) => currentGrade(r).key === "danger").length;
-  const recent = [...all].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 5);
+  const homeReports = regionState.selected ? getReportsForRegionRaw(regionState.selected.sigungu) : getAllReports();
+  const unregCount = homeReports.length;
+  const dangerCount = homeReports.filter((r) => currentGrade(r).key === "danger").length;
+  const recent = [...homeReports].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 5);
 
   app.innerHTML = `
     <div class="topbar">
@@ -201,12 +203,25 @@ function currentGrade(r) {
   return gradeOf(last.score);
 }
 
+function getReportsForRegionRaw(sigungu) {
+  return getAllReports().filter((r) => r.addr && r.addr.includes(sigungu));
+}
+
 function initHomeMiniMap() {
   const el = document.getElementById("home-mini-map");
   if (!el || !window.L) return;
+
+  const sel = regionState.selected;
+  const govList = sel && regionState.loaded ? getBoxesForRegion(regionState.boxes, sel.sido, sel.sigungu) : REGISTERED_BOXES;
+  const reportList = sel ? getReportsForRegionRaw(sel.sigungu) : getAllReports();
+  const points = [...govList.map((b) => [b.lat, b.lng]), ...reportList.map((r) => [r.lat, r.lng])];
+  const center = points.length
+    ? points.reduce((acc, p) => [acc[0] + p[0] / points.length, acc[1] + p[1] / points.length], [0, 0])
+    : NEIGHBORHOOD.center;
+
   const map = L.map(el, {
-    center: NEIGHBORHOOD.center,
-    zoom: NEIGHBORHOOD.zoom - 1,
+    center,
+    zoom: points.length ? 13 : NEIGHBORHOOD.zoom - 1,
     zoomControl: false,
     dragging: false,
     scrollWheelZoom: false,
@@ -215,10 +230,10 @@ function initHomeMiniMap() {
     attributionControl: false,
   });
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
-  REGISTERED_BOXES.forEach((b) =>
+  govList.forEach((b) =>
     L.circleMarker([b.lat, b.lng], { radius: 5, color: "#3182F6", fillColor: "#3182F6", fillOpacity: 0.9, weight: 1 }).addTo(map)
   );
-  getAllReports().forEach((r) => {
+  reportList.forEach((r) => {
     const g = currentGrade(r);
     const color = g.key === "danger" ? "#FF5A5F" : g.key === "warn" ? "#FF9F1C" : "#00C471";
     L.circleMarker([r.lat, r.lng], { radius: 5, color, fillColor: color, fillOpacity: 0.9, weight: 1 }).addTo(map);
@@ -665,18 +680,9 @@ function bindCopyButtons(r) {
 /* 동네 탭 — 시군구 검색 → 표준데이터/신고 목록 ↔ 지도                */
 /* ============================================================ */
 function renderMap() {
+  ensureRegionData();
   if (!regionState.loaded) {
     renderRegionLoading("전국 표준데이터를 불러오는 중...");
-    if (!regionState.loading) {
-      regionState.loading = true;
-      loadGovBoxes().then((boxes) => {
-        regionState.boxes = boxes;
-        regionState.regionList = getRegionList();
-        regionState.loaded = true;
-        regionState.loading = false;
-        detectRegionFromGPS();
-      });
-    }
     return;
   }
   if (!regionState.selected) {
@@ -687,35 +693,58 @@ function renderMap() {
   else renderRegionList();
 }
 
+// 홈 화면과 동네 탭이 같은 지역 데이터를 쓰도록, 앱 시작 시 한 번만 불러온다.
+function ensureRegionData() {
+  if (regionState.loaded || regionState.loading) return;
+  regionState.loading = true;
+  loadGovBoxes().then((boxes) => {
+    regionState.boxes = boxes;
+    regionState.regionList = getRegionList();
+    regionState.loaded = true;
+    regionState.loading = false;
+    detectRegionFromGPS();
+  });
+}
+
+function refreshIfIdle() {
+  if (state.tab === "home" || state.tab === "map") render();
+}
+
+function selectRegion(sido, sigungu) {
+  regionState.selected = { sido, sigungu };
+  regionState.selectedDong = null;
+  regionState.dongOptions = computeDongOptions(sido, sigungu);
+}
+
 function detectRegionFromGPS() {
   if (regionState.selected || regionState.gpsDone) {
-    render();
+    refreshIfIdle();
     return;
   }
   if (!navigator.geolocation) {
     regionState.gpsDone = true;
-    render();
+    refreshIfIdle();
     return;
   }
   regionState.gpsPending = true;
-  render();
+  refreshIfIdle();
   navigator.geolocation.getCurrentPosition(
     async (pos) => {
       try {
         const addr = await reverseGeocode(pos.coords.latitude, pos.coords.longitude);
         const match = matchRegionFromAddress(regionState.regionList, addr);
-        if (match) regionState.selected = { sido: match.sido, sigungu: match.sigungu };
+        if (match) selectRegion(match.sido, match.sigungu);
       } catch (e) {
         /* 위치 인식 실패 시 검색 안내 화면으로 대체 */
       }
       regionState.gpsPending = false;
       regionState.gpsDone = true;
-      if (state.tab === "map") render();
+      refreshIfIdle();
     },
     () => {
       regionState.gpsPending = false;
       regionState.gpsDone = true;
-      if (state.tab === "map") render();
+      refreshIfIdle();
     },
     { timeout: 8000 }
   );
@@ -745,14 +774,37 @@ function renderRegionPrompt() {
   bindRegionControls();
 }
 
+// gov-boxes.json의 dong 필드(지번주소에서 추출, govboxes.js 주석 참고)는 정확도가
+// 높아 그대로 쓴다. 제보 주소(리버스 지오코딩 결과, 공백으로 구분된 형식)는
+// "OO동"이 독립된 단어로 등장하는 경우만 인정해 오탐(예: 아파트 "가동")을 막는다.
+const REPORT_DONG_RE = /(?:^|\s)([가-힣]{2,4}동)(?=\s|$)/;
+function extractReportDong(addr) {
+  const m = (addr || "").match(REPORT_DONG_RE);
+  return m ? m[1] : "";
+}
+
+function computeDongOptions(sido, sigungu) {
+  const govList = getBoxesForRegion(regionState.boxes, sido, sigungu);
+  const reportList = getReportsForRegionRaw(sigungu);
+  const counts = new Map();
+  const add = (dong) => {
+    if (dong) counts.set(dong, (counts.get(dong) || 0) + 1);
+  };
+  govList.forEach((b) => add(b.dong));
+  reportList.forEach((r) => add(extractReportDong(r.addr)));
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([name]) => name).slice(0, 14);
+}
+
 function currentRegionBoxes() {
-  return getBoxesForRegion(regionState.boxes, regionState.selected.sido, regionState.selected.sigungu);
+  const list = getBoxesForRegion(regionState.boxes, regionState.selected.sido, regionState.selected.sigungu);
+  if (!regionState.selectedDong) return list;
+  return list.filter((b) => b.dong === regionState.selectedDong);
 }
 
 function currentRegionReports() {
   const sigungu = regionState.selected.sigungu;
-  return getAllReports()
-    .filter((r) => r.addr && r.addr.includes(sigungu))
+  return getReportsForRegionRaw(sigungu)
+    .filter((r) => !regionState.selectedDong || extractReportDong(r.addr) === regionState.selectedDong)
     .map((r) => {
       const last = r.history[r.history.length - 1];
       return { r, last, g: gradeOf(last.score) };
@@ -762,12 +814,22 @@ function currentRegionReports() {
 
 function renderRegionHeaderHtml() {
   const sel = regionState.selected;
+  const dongChips = regionState.dongOptions.length
+    ? `
+    <div class="dong-chip-row">
+      <button class="dong-chip ${!regionState.selectedDong ? "active" : ""}" data-dong="">전체</button>
+      ${regionState.dongOptions
+        .map((d) => `<button class="dong-chip ${regionState.selectedDong === d ? "active" : ""}" data-dong="${escapeHtml(d)}">${escapeHtml(d)}</button>`)
+        .join("")}
+    </div>`
+    : "";
   return `
     <div class="region-search-row">
       <input type="text" id="region-search" class="region-search-input" placeholder="시/군/구 검색 (예: 강남구)" value="${escapeHtml(regionState.searchQuery)}" />
     </div>
     <div id="region-suggest" class="region-suggest ${regionState.searchQuery ? "" : "hidden"}"></div>
     <div class="region-current">📍 <b>${escapeHtml(sel.sido)} ${escapeHtml(sel.sigungu)}</b></div>
+    ${dongChips}
     <div class="region-tabs">
       <button class="region-tab-btn ${regionState.activeList === "gov" ? "active" : ""}" data-list="gov">모든 수거함 <span class="region-tab-count">${currentRegionBoxes().length}</span></button>
       <button class="region-tab-btn ${regionState.activeList === "reports" ? "active" : ""}" data-list="reports">신고된 수거함 <span class="region-tab-count">${currentRegionReports().length}</span></button>
@@ -841,6 +903,13 @@ function bindRegionControls() {
     })
   );
 
+  app.querySelectorAll(".dong-chip").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      regionState.selectedDong = btn.dataset.dong || null;
+      renderRegionList();
+    })
+  );
+
   app.querySelectorAll("[data-open-report]").forEach((el) =>
     el.addEventListener("click", () => openReportModal(el.dataset.openReport))
   );
@@ -867,7 +936,7 @@ function renderRegionSuggestions() {
 
   box.querySelectorAll("[data-sido]").forEach((row) =>
     row.addEventListener("click", () => {
-      regionState.selected = { sido: row.dataset.sido, sigungu: row.dataset.sigungu };
+      selectRegion(row.dataset.sido, row.dataset.sigungu);
       regionState.searchQuery = "";
       render();
     })
@@ -1034,3 +1103,4 @@ app.addEventListener("click", (e) => {
 });
 
 setTab("home");
+ensureRegionData(); // 홈 화면도 실제 위치 데이터를 쓰므로 앱 시작과 동시에 불러온다

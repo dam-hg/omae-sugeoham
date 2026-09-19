@@ -6,6 +6,11 @@
 // (출처: cosmosfarm/korea-administrative-district). 표준데이터에 등록 건수가
 // 0건인 시군구도 검색·조회가 가능해야 하므로, 검색 대상은 이 "전체 행정구역"
 // 목록을 기준으로 하고 gov-boxes.json은 그 위에 건수를 매기는 용도로만 쓴다.
+//
+// gov-boxes.json의 dong 필드는 지번주소(LCTN_LOTNO_ADDR, "시군구+동+번지"가
+// 공백 없이 붙는 형식)에서 정규식으로 추출한 값이다. 도로명주소는 동 정보를
+// 담지 않아 사용하지 않았다. 제공기관마다 지번주소 표기 방식이 달라 모든
+// 행에서 추출되지는 않으며(전국 기준 약 2.5%), 추출 실패 시 빈 문자열이다.
 let boxCache = null;
 let regionListCache = null;
 
@@ -15,7 +20,7 @@ export async function loadGovBoxes() {
   const rawBoxes = await boxRes.json();
   const rawRegions = await regionRes.json();
 
-  boxCache = rawBoxes.map((r) => ({ sido: r.p, sigungu: r.g, name: r.n, addr: r.a, lat: r.y, lng: r.x }));
+  boxCache = rawBoxes.map((r) => ({ sido: r.p, sigungu: r.g, dong: r.d || "", name: r.n, addr: r.a, lat: r.y, lng: r.x }));
 
   const countMap = new Map();
   for (const b of boxCache) {
