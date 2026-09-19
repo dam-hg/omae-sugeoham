@@ -40,6 +40,18 @@ export function daysAgo(ts) {
   return `방치 ${d}일째`;
 }
 
+export function daysCompact(ts) {
+  const diff = Date.now() - ts;
+  const d = Math.floor(diff / (1000 * 60 * 60 * 24));
+  return d <= 0 ? "오늘" : `${d}일`;
+}
+
+export function formatDateTime(ts) {
+  return new Date(ts).toLocaleString("ko-KR", {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  });
+}
+
 export function relTime(ts) {
   const diff = Date.now() - ts;
   const mins = Math.floor(diff / 60000);

@@ -1,6 +1,6 @@
 import { NEIGHBORHOOD, REGISTERED_BOXES } from "./data.js";
 import { getAllReports, getUserReports, addReport, getReportById } from "./store.js";
-import { gradeOf, daysAgo, relTime, toast, escapeHtml, reverseGeocode } from "./utils.js";
+import { gradeOf, daysAgo, daysCompact, relTime, toast, escapeHtml, reverseGeocode, formatDateTime } from "./utils.js";
 import { runDiagnosis } from "./diagnose.js";
 
 const app = document.getElementById("app");
@@ -12,7 +12,7 @@ function freshDraft() {
 
 const state = {
   tab: "home",
-  reportStep: "camera", // camera -> form -> loading -> result
+  reportStep: "camera", // camera -> form -> loading -> preview -> submitted
   reportDraft: freshDraft(),
   lastResult: null,
   sheetOpen: false,
@@ -92,7 +92,7 @@ function renderHome() {
   const all = getAllReports();
   const unregCount = all.length;
   const dangerCount = all.filter((r) => currentGrade(r).key === "danger").length;
-  const recent = [...all].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 6);
+  const recent = [...all].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 5);
 
   app.innerHTML = `
     <div class="topbar">
@@ -134,12 +134,8 @@ function renderHome() {
     </div>
 
     <div class="section">
-      <div class="section-title">최근 제보</div>
-      ${
-        recent.length
-          ? `<div class="hscroll">${recent.map(reportCardHtml).join("")}</div>`
-          : `<div class="empty-note">아직 제보가 없어요. 첫 제보를 남겨보세요!</div>`
-      }
+      <div class="section-title">최근 제보 <small>실시간 업데이트</small></div>
+      ${recent.length ? tickerHtml(recent) : `<div class="empty-note">아직 제보가 없어요. 첫 제보를 남겨보세요!</div>`}
     </div>
 
     <p class="foot-note">AI 진단 결과는 참고용이며, 최종 정비·계고 판단은 담당 공무원의 현장 확인을 거칩니다.</p>
@@ -158,17 +154,29 @@ function renderHome() {
   initHomeMiniMap();
 }
 
-function reportCardHtml(r) {
-  const g = currentGrade(r);
-  const photoStyle = r.isSeed
-    ? `background:${r.illustBg}`
-    : `background-image:url('${r.photo}')`;
+function tickerHtml(list) {
+  const rows = list.map(tickerRowHtml).join("");
+  const duration = list.length * 3.2;
   return `
-    <div class="report-card" data-open-report="${r.id}">
-      <div class="thumb" style="${photoStyle}">${r.isSeed ? r.illust : ""}</div>
-      <div><span class="grade-dot ${g.key}"></span><span class="card-meta">${g.emoji} ${g.label}</span></div>
-      <p class="card-addr">${escapeHtml(r.addr)}</p>
-      <div class="card-meta">${r.registered ? "등록" : "미등록"} · ${daysAgo(r.createdAt)}</div>
+    <div class="ticker-wrap">
+      <div class="ticker-track" style="animation-duration:${duration}s">
+        ${rows}
+        ${rows}
+      </div>
+    </div>
+  `;
+}
+
+function tickerRowHtml(r) {
+  const g = currentGrade(r);
+  const photoStyle = r.isSeed ? `background:${r.illustBg}` : `background-image:url('${r.photo}')`;
+  return `
+    <div class="ticker-row" data-open-report="${r.id}">
+      <div class="ticker-thumb" style="${photoStyle}">${r.isSeed ? r.illust : ""}</div>
+      <div class="ticker-mid">
+        <p class="card-addr">${escapeHtml(r.addr)}</p>
+        <div class="card-meta"><span class="grade-dot ${g.key}"></span>${g.emoji} ${g.label} · ${r.registered ? "등록" : "미등록"} · ${daysAgo(r.createdAt)}</div>
+      </div>
     </div>
   `;
 }
@@ -210,7 +218,15 @@ function renderReport() {
   if (state.reportStep === "camera") renderCamera();
   else if (state.reportStep === "form") renderReportForm();
   else if (state.reportStep === "loading") renderReportLoading();
-  else if (state.reportStep === "result") renderReportResult(state.lastResult);
+  else if (state.reportStep === "preview") renderReportPreview(state.lastResult);
+  else if (state.reportStep === "submitted") renderReportSubmitted(state.lastResult);
+}
+
+function restartReportFlow() {
+  state.lastResult = null;
+  state.reportDraft = freshDraft();
+  state.reportStep = "camera";
+  render();
 }
 
 /* ---------------- camera step ---------------- */
@@ -353,9 +369,8 @@ function renderReportForm() {
     try {
       const address = d.locAddress || (await reverseGeocode(d.loc.lat, d.loc.lng));
       const result = await runDiagnosis(d.file, d.loc, address);
-      addReport(result);
-      state.lastResult = result;
-      state.reportStep = "result";
+      state.lastResult = result; // 아직 저장 전 — 사용자가 신고하기를 눌러야 확정
+      state.reportStep = "preview";
       render();
     } catch (err) {
       console.error(err);
@@ -460,29 +475,84 @@ function renderReportLoading() {
   `;
 }
 
-function renderReportResult(r) {
+function renderReportPreview(r) {
   app.innerHTML = `
     <div class="flow-header">
       <button class="back-btn" data-action="home-back">‹</button>
-      <div class="flow-title">진단 결과</div>
+      <div class="flow-title">진단 리포트</div>
     </div>
     <div class="step-dots"><span class="on"></span><span class="on"></span><span class="on"></span></div>
-    ${buildResultBody(r)}
+    ${buildReportDashboard(r)}
     <div class="result-actions">
-      <button class="btn btn-dark" id="see-map-btn">🗺️ 지도에서 보기</button>
+      <button class="btn btn-primary" id="confirm-report-btn">🚩 신고하기</button>
+      <button class="btn btn-outline" id="retry-btn">🔄 다시하기</button>
+    </div>
+  `;
+  document.getElementById("confirm-report-btn").addEventListener("click", () => {
+    addReport(r);
+    state.reportStep = "submitted";
+    render();
+  });
+  document.getElementById("retry-btn").addEventListener("click", restartReportFlow);
+}
+
+function renderReportSubmitted(r) {
+  const all = getAllReports();
+  const totalCount = all.length;
+  const dangerCount = all.filter((x) => currentGrade(x).key === "danger").length;
+
+  app.innerHTML = `
+    <div class="flow-header">
+      <div class="flow-title">민원 제출하기</div>
+    </div>
+    <div class="step-dots"><span class="on"></span><span class="on"></span><span class="on"></span></div>
+
+    <div class="submit-success">✅ 제보가 저장됐어요!</div>
+
+    <div class="impact-banner">
+      <div class="impact-title">📢 민원이 쌓일수록, 정비는 빨라집니다</div>
+      <p class="impact-desc">같은 방치 수거함에 반복 신고가 누적될수록 지자체 우선 정비 대상으로 분류돼요. 지금 안전신문고에 접수하면 실제 행정 처리로 이어집니다.</p>
+      <div class="impact-stats">
+        <div><strong>${totalCount}</strong><span>우리 동네 누적 제보</span></div>
+        <div><strong>${dangerCount}</strong><span>정비 시급 🔴</span></div>
+      </div>
+    </div>
+
+    ${buildDraftCardHtml(r)}
+
+    <div class="result-actions">
+      <button class="btn btn-dark" id="go-safety-btn">🏛️ 자치구에 민원넣기</button>
       <button class="btn btn-outline" id="home-btn">홈으로</button>
     </div>
   `;
+
   document.getElementById("home-btn").addEventListener("click", () => setTab("home"));
-  document.getElementById("see-map-btn").addEventListener("click", () => {
-    setTab("map");
-    setTimeout(() => flyToReport(r.id), 250);
+  document.getElementById("go-safety-btn").addEventListener("click", async () => {
+    const text = r.draft || buildFallbackDraft(r);
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("민원 내용이 복사됐어요! 안전신문고에 붙여넣기 해주세요");
+    } catch (e) {
+      /* 복사 실패해도 이동은 진행 */
+    }
+    window.open("https://www.safetyreport.go.kr/", "_blank", "noopener");
   });
   bindCopyButtons(r);
-  toast("제보가 저장되었어요 🎉");
 }
 
-function buildResultBody(r) {
+function buildDraftCardHtml(r) {
+  return `
+    <div class="draft-card">
+      <div class="draft-head"><strong>📝 민원 초안</strong><span class="card-meta">기존 신고 채널에 바로 제출 가능</span></div>
+      <textarea class="draft-textarea" id="draft-text" readonly>${escapeHtml(r.draft || buildFallbackDraft(r))}</textarea>
+      <div class="draft-actions">
+        <button class="btn btn-ghost" data-copy="${r.id}">📋 복사하기</button>
+      </div>
+    </div>
+  `;
+}
+
+function buildReportDashboard(r) {
   const g = gradeOf(r.score !== undefined ? r.score : r.history[r.history.length - 1].score);
   const score = r.score !== undefined ? r.score : r.history[r.history.length - 1].score;
   const labels = r.labels || r.history[r.history.length - 1].labels;
@@ -503,6 +573,8 @@ function buildResultBody(r) {
   const labelToKey = { "관리자 표시 없음": "noManager", "주변 투기물 발생": "dump", "포화": "satur", "파손·노후": "damage" };
 
   return `
+    <div class="report-meta">📋 진단 리포트 · ${formatDateTime(r.history[r.history.length - 1].date)}</div>
+
     <div class="result-photo">
       ${photoHtml}
       <span class="mask-tag">🔒 개인정보 자동 마스킹 처리됨</span>
@@ -511,17 +583,29 @@ function buildResultBody(r) {
       ${labels.map((l) => `<span class="state-chip ${l !== "정상" ? "flag" : ""}">${l}</span>`).join("")}
     </div>
 
-    <div class="score-card">
-      <div class="score-gauge" style="background:conic-gradient(${gaugeColor} ${gaugeDeg}deg, #EFEFEF 0deg)">
-        <div class="score-gauge-num">${score}<sub>/100점</sub></div>
+    <div class="section-label">종합 요약</div>
+    <div class="summary-grid">
+      <div class="summary-tile">
+        <div class="summary-gauge" style="background:conic-gradient(${gaugeColor} ${gaugeDeg}deg, #EFEFEF 0deg)">
+          <span>${score}</span>
+        </div>
+        <div class="summary-tile-label">위험도 점수</div>
       </div>
-      <div>
-        <span class="grade-pill ${g.key}">${g.emoji} ${g.label}</span>
-        <p class="score-info-title">위험도 진단 결과</p>
-        <p class="score-info-sub">고정 채점표 기준으로 산출된 참고 점수입니다.</p>
+      <div class="summary-tile">
+        <div class="summary-big" style="color:${gaugeColor}">${g.emoji}</div>
+        <div class="summary-tile-label">${g.label}</div>
+      </div>
+      <div class="summary-tile">
+        <div class="summary-big ${r.registered ? "" : "danger-text"}">${r.registered ? "등록" : "미등록"}</div>
+        <div class="summary-tile-label">표준데이터</div>
+      </div>
+      <div class="summary-tile">
+        <div class="summary-big">${daysCompact(r.createdAt)}</div>
+        <div class="summary-tile-label">방치 이력</div>
       </div>
     </div>
 
+    <div class="section-label">세부 진단 근거</div>
     <div class="breakdown-card">
       ${items
         .map((it) => {
@@ -540,23 +624,6 @@ function buildResultBody(r) {
     </div>
 
     <div class="notice-banner">⚠️ <span>AI 진단은 참고용입니다. 실제 정비 여부는 반드시 <b>현장 확인</b>을 거쳐 결정됩니다.</span></div>
-
-    <div class="badge-row">
-      <div class="badge ${r.registered ? "reg" : "unreg"}">
-        <span class="b-num">${r.registered ? "등록" : "미등록"}</span>표준데이터
-      </div>
-      <div class="badge neutral">
-        <span class="b-num">${daysAgo(r.createdAt)}</span>방치 이력
-      </div>
-    </div>
-
-    <div class="draft-card">
-      <div class="draft-head"><strong>📝 민원 초안</strong><span class="card-meta">기존 신고 채널에 바로 제출 가능</span></div>
-      <textarea class="draft-textarea" id="draft-text" readonly>${escapeHtml(r.draft || buildFallbackDraft(r))}</textarea>
-      <div class="draft-actions">
-        <button class="btn btn-ghost" data-copy="${r.id}">📋 복사하기</button>
-      </div>
-    </div>
   `;
 }
 
@@ -760,7 +827,8 @@ function openReportModal(id) {
   backdrop.innerHTML = `
     <div class="modal-sheet">
       <div class="modal-head"><button class="sheet-close" id="modal-close">✕</button></div>
-      ${buildResultBody(normalizeForModal(r))}
+      ${buildReportDashboard(normalizeForModal(r))}
+      ${buildDraftCardHtml(normalizeForModal(r))}
     </div>
   `;
   document.body.appendChild(backdrop);
