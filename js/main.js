@@ -2,6 +2,7 @@ import { NEIGHBORHOOD, REGISTERED_BOXES, REGISTERED_DATA_SOURCE } from "./data.j
 import { getAllReports, getUserReports, addReport, getReportById } from "./store.js";
 import { gradeOf, daysAgo, daysCompact, relTime, toast, escapeHtml, reverseGeocode, formatDateTime } from "./utils.js";
 import { runDiagnosis } from "./diagnose.js";
+import { loadGovBoxes, getRegionList, searchRegions, getBoxesForRegion, DEFAULT_REGION } from "./govboxes.js";
 
 const app = document.getElementById("app");
 const bottomnav = document.getElementById("bottomnav");
@@ -15,7 +16,17 @@ const state = {
   reportStep: "camera", // camera -> form -> loading -> preview -> submitted
   reportDraft: freshDraft(),
   lastResult: null,
-  sheetOpen: false,
+};
+
+const regionState = {
+  loaded: false,
+  loading: false,
+  boxes: [],
+  regionList: [],
+  selected: DEFAULT_REGION,
+  activeList: "gov", // "gov" | "reports"
+  view: "list", // "list" | "map"
+  searchQuery: "",
 };
 
 const maps = { home: null, pin: null, dashboard: null };
@@ -76,7 +87,9 @@ function updateNavActive() {
 function render() {
   destroyAllMaps();
   stopCameraStream();
-  const fullBleed = state.tab === "map" || (state.tab === "report" && state.reportStep === "camera");
+  const fullBleed =
+    (state.tab === "map" && regionState.view === "map") ||
+    (state.tab === "report" && state.reportStep === "camera");
   app.classList.toggle("no-pad", fullBleed);
   if (state.tab === "home") renderHome();
   else if (state.tab === "report") renderReport();
@@ -98,7 +111,7 @@ function renderHome() {
     <div class="topbar">
       <div class="brand-wordmark">오매<span>!</span> 수거함</div>
     </div>
-    <div class="topbar-sub">사진 한 장으로 시작하는 우리 동네 수거함 지도 📍 ${NEIGHBORHOOD.name}</div>
+    <div class="topbar-sub">사진 한 장으로 시작하는 우리 동네 수거함 지도</div>
 
     <div class="cta-card" data-action="go-report">
       <div class="cta-eyebrow">🚩 방치 수거함 발견!</div>
@@ -110,22 +123,17 @@ function renderHome() {
     <div class="section">
       <div class="stat-row">
         <div class="stat-card info">
-          <div class="stat-num">${REGISTERED_BOXES.length}</div>
-          <div class="stat-label">등록 수거함</div>
+          <div class="stat-num">${REGISTERED_DATA_SOURCE.nationwideTotal.toLocaleString()}</div>
+          <div class="stat-label">등록 수거함(전국)</div>
         </div>
         <div class="stat-card warn">
           <div class="stat-num">${unregCount}</div>
-          <div class="stat-label">발견된 미등록</div>
+          <div class="stat-label">표준데이터 미등록</div>
         </div>
         <div class="stat-card danger">
           <div class="stat-num">${dangerCount}</div>
           <div class="stat-label">정비 시급 🔴</div>
         </div>
-      </div>
-      <div class="gov-data-note">
-        📊 <b>${REGISTERED_DATA_SOURCE.name}</b>(data.go.kr) 기준 · ${NEIGHBORHOOD.name.split(" ")[0]} 등록 수거함
-        <b>${REGISTERED_DATA_SOURCE.gwanakCount}건</b> / 전국 ${REGISTERED_DATA_SOURCE.nationwideTotal.toLocaleString()}건
-        <span class="gov-data-sub">${REGISTERED_DATA_SOURCE.gwanakCount === 0 ? "— 아직 표준데이터가 없는 사각지대예요" : ""} (${REGISTERED_DATA_SOURCE.snapshotDate} 기준)</span>
       </div>
     </div>
 
@@ -652,69 +660,213 @@ function bindCopyButtons(r) {
 }
 
 /* ============================================================ */
-/* MAP / DASHBOARD                                                */
+/* 동네 탭 — 시군구 검색 → 표준데이터/신고 목록 ↔ 지도                */
 /* ============================================================ */
 function renderMap() {
+  if (!regionState.loaded) {
+    renderRegionLoading();
+    if (!regionState.loading) {
+      regionState.loading = true;
+      loadGovBoxes().then((boxes) => {
+        regionState.boxes = boxes;
+        regionState.regionList = getRegionList(boxes);
+        regionState.loaded = true;
+        regionState.loading = false;
+        if (state.tab === "map") render();
+      });
+    }
+    return;
+  }
+  if (regionState.view === "map") renderRegionMap();
+  else renderRegionList();
+}
+
+function renderRegionLoading() {
+  app.innerHTML = `
+    <div class="topbar"><div class="brand-wordmark">우리 동네 조회</div></div>
+    <div class="loading-wrap">
+      <div class="spinner"></div>
+      <div class="loading-title">전국 표준데이터를 불러오는 중...</div>
+    </div>
+  `;
+}
+
+function currentRegionBoxes() {
+  return getBoxesForRegion(regionState.boxes, regionState.selected.sido, regionState.selected.sigungu);
+}
+
+function currentRegionReports() {
+  const sigungu = regionState.selected.sigungu;
+  return getAllReports()
+    .filter((r) => r.addr && r.addr.includes(sigungu))
+    .map((r) => {
+      const last = r.history[r.history.length - 1];
+      return { r, last, g: gradeOf(last.score) };
+    })
+    .sort((a, b) => b.last.score - a.last.score);
+}
+
+function renderRegionHeaderHtml() {
+  const sel = regionState.selected;
+  return `
+    <div class="region-search-row">
+      <input type="text" id="region-search" class="region-search-input" placeholder="시/군/구 검색 (예: 강남구)" value="${escapeHtml(regionState.searchQuery)}" />
+    </div>
+    <div id="region-suggest" class="region-suggest ${regionState.searchQuery ? "" : "hidden"}"></div>
+    <div class="region-current">📍 <b>${escapeHtml(sel.sido)} ${escapeHtml(sel.sigungu)}</b></div>
+    <div class="region-tabs">
+      <button class="region-tab-btn ${regionState.activeList === "gov" ? "active" : ""}" data-list="gov">모든 수거함 <span class="region-tab-count">${currentRegionBoxes().length}</span></button>
+      <button class="region-tab-btn ${regionState.activeList === "reports" ? "active" : ""}" data-list="reports">신고된 수거함 <span class="region-tab-count">${currentRegionReports().length}</span></button>
+    </div>
+  `;
+}
+
+function renderRegionList() {
+  const govList = currentRegionBoxes();
+  const reportList = currentRegionReports();
+  const rows =
+    regionState.activeList === "gov"
+      ? govList.length
+        ? govList.map(govRowHtml).join("")
+        : `<div class="empty-note">이 지역엔 표준데이터에 등록된 수거함이 없어요.</div>`
+      : reportList.length
+      ? reportList.map(reportRowHtml).join("")
+      : `<div class="empty-note">이 지역엔 아직 신고된 수거함이 없어요.</div>`;
+
+  app.innerHTML = `
+    <div class="topbar"><div class="brand-wordmark">우리 동네 조회</div></div>
+    ${renderRegionHeaderHtml()}
+    <div class="region-list">${rows}</div>
+    <div class="map-toggle-fab-wrap"><button class="map-toggle-fab" id="to-map-view">🗺️ 지도로 보기</button></div>
+  `;
+
+  bindRegionControls();
+  document.getElementById("to-map-view").addEventListener("click", () => {
+    regionState.view = "map";
+    render();
+  });
+}
+
+function govRowHtml(b) {
+  return `
+    <div class="region-row">
+      <div class="region-row-icon">🔵</div>
+      <div class="region-row-mid">
+        <div class="priority-addr">${escapeHtml(b.name || b.addr)}</div>
+        <div class="priority-meta">${escapeHtml(b.addr)}</div>
+      </div>
+    </div>
+  `;
+}
+
+function reportRowHtml({ r, g, last }) {
+  return `
+    <div class="region-row" data-open-report="${r.id}">
+      <div class="region-row-icon">${g.emoji}</div>
+      <div class="region-row-mid">
+        <div class="priority-addr">${escapeHtml(r.addr)}</div>
+        <div class="priority-meta">${g.label} · ${r.registered ? "등록" : "미등록"} · ${daysAgo(r.createdAt)}</div>
+      </div>
+      <div class="priority-score" style="color:${g.key === "danger" ? "#FF5A5F" : g.key === "warn" ? "#FF9F1C" : "#00C471"}">${last.score}점</div>
+    </div>
+  `;
+}
+
+function bindRegionControls() {
+  const input = document.getElementById("region-search");
+  input.addEventListener("input", (e) => {
+    regionState.searchQuery = e.target.value;
+    renderRegionSuggestions();
+  });
+  input.addEventListener("focus", renderRegionSuggestions);
+
+  app.querySelectorAll(".region-tab-btn").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      regionState.activeList = btn.dataset.list;
+      renderRegionList();
+    })
+  );
+
+  app.querySelectorAll("[data-open-report]").forEach((el) =>
+    el.addEventListener("click", () => openReportModal(el.dataset.openReport))
+  );
+}
+
+function renderRegionSuggestions() {
+  const box = document.getElementById("region-suggest");
+  if (!box) return;
+  if (!regionState.searchQuery.trim()) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  const matches = searchRegions(regionState.regionList, regionState.searchQuery).slice(0, 8);
+  box.classList.remove("hidden");
+  box.innerHTML = matches.length
+    ? matches
+        .map(
+          (m) =>
+            `<div class="region-suggest-row" data-sido="${escapeHtml(m.sido)}" data-sigungu="${escapeHtml(m.sigungu)}">${escapeHtml(m.sido)} ${escapeHtml(m.sigungu)} <span class="region-tab-count">${m.count}</span></div>`
+        )
+        .join("")
+    : `<div class="region-suggest-row empty">검색 결과가 없어요</div>`;
+
+  box.querySelectorAll("[data-sido]").forEach((row) =>
+    row.addEventListener("click", () => {
+      regionState.selected = { sido: row.dataset.sido, sigungu: row.dataset.sigungu };
+      regionState.searchQuery = "";
+      render();
+    })
+  );
+}
+
+function renderRegionMap() {
   app.innerHTML = `
     <div class="map-view-wrap">
       <div id="dashboard-map"></div>
       <div class="map-legend">
-        <span><span class="legend-dot" style="background:#3182F6"></span>등록(표준데이터 ${REGISTERED_BOXES.length}건)</span>
+        <span><span class="legend-dot" style="background:#3182F6"></span>등록(표준데이터)</span>
         <span><span class="legend-dot" style="background:#00C471"></span>관찰</span>
         <span><span class="legend-dot" style="background:#FF9F1C"></span>정비 권고</span>
         <span><span class="legend-dot" style="background:#FF5A5F"></span>정비 시급</span>
       </div>
-      <button class="list-toggle-btn" id="toggle-sheet">🚩 우선 정비 리스트</button>
-      <div class="sheet" id="priority-sheet">
-        <div class="sheet-handle"></div>
-        <div class="sheet-head">
-          <h3>우선 정비 리스트</h3>
-          <button class="sheet-close" id="close-sheet">✕</button>
-        </div>
-        <div class="sheet-body" id="priority-list"></div>
-      </div>
+      <button class="list-toggle-btn" id="to-list-view">📋 목록으로</button>
     </div>
   `;
-
-  document.getElementById("toggle-sheet").addEventListener("click", () => toggleSheet(true));
-  document.getElementById("close-sheet").addEventListener("click", () => toggleSheet(false));
-
-  initDashboardMap();
-  renderPriorityList();
+  document.getElementById("to-list-view").addEventListener("click", () => {
+    regionState.view = "list";
+    render();
+  });
+  initRegionMap();
 }
 
-function toggleSheet(open) {
-  state.sheetOpen = open;
-  const sheet = document.getElementById("priority-sheet");
-  if (sheet) sheet.classList.toggle("open", open);
-}
-
-let dashboardMarkers = {};
-
-function initDashboardMap() {
+function initRegionMap() {
   const el = document.getElementById("dashboard-map");
   if (!el || !window.L) return;
-  const map = L.map(el, { center: NEIGHBORHOOD.center, zoom: NEIGHBORHOOD.zoom });
+  const govList = currentRegionBoxes();
+  const reportList = currentRegionReports();
+  const points = [...govList.map((b) => [b.lat, b.lng]), ...reportList.map(({ r }) => [r.lat, r.lng])];
+  const center = points.length
+    ? points.reduce((acc, p) => [acc[0] + p[0] / points.length, acc[1] + p[1] / points.length], [0, 0])
+    : NEIGHBORHOOD.center;
+
+  const map = L.map(el, { center, zoom: points.length ? 14 : NEIGHBORHOOD.zoom });
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     attribution: "&copy; OpenStreetMap contributors",
   }).addTo(map);
 
-  dashboardMarkers = {};
-
-  REGISTERED_BOXES.forEach((b) => {
+  govList.forEach((b) => {
     const m = L.circleMarker([b.lat, b.lng], {
-      radius: 8, color: "#fff", weight: 2, fillColor: "#3182F6", fillOpacity: 1,
+      radius: 7, color: "#fff", weight: 2, fillColor: "#3182F6", fillOpacity: 1,
     }).addTo(map);
-    m.bindPopup(`<div class="popup-title">🔵 등록 수거함</div>${escapeHtml(b.addr)}<br/>표준데이터에 등록된 시설입니다.`);
+    m.bindPopup(`<div class="popup-title">🔵 등록 수거함</div>${escapeHtml(b.name || b.addr)}<br/>${escapeHtml(b.addr)}`);
   });
 
-  getAllReports().forEach((r) => {
-    const g = currentGrade(r);
+  reportList.forEach(({ r, g, last }) => {
     const color = g.key === "danger" ? "#FF5A5F" : g.key === "warn" ? "#FF9F1C" : "#00C471";
     const m = L.circleMarker([r.lat, r.lng], {
       radius: 9, color: "#fff", weight: 2, fillColor: color, fillOpacity: 1,
     }).addTo(map);
-    const last = r.history[r.history.length - 1];
     const thumb = r.isSeed
       ? `<div class="popup-thumb" style="display:flex;align-items:center;justify-content:center;font-size:28px;background:${r.illustBg}">${r.illust}</div>`
       : `<img class="popup-thumb" src="${r.photo}" />`;
@@ -722,10 +874,9 @@ function initDashboardMap() {
       ${thumb}
       <div class="popup-title">${g.emoji} ${g.label} · ${last.score}점</div>
       ${escapeHtml(r.addr)}<br/>
-      ${r.registered ? "표준데이터 등록" : "⚠️ 표준데이터 미등록"} · ${r.history.length}회 제보 · ${daysAgo(r.createdAt)}
+      ${r.registered ? "표준데이터 등록" : "⚠️ 표준데이터 미등록"} · ${daysAgo(r.createdAt)}
       <div class="popup-btn" data-open-report="${r.id}">민원 초안 보기</div>
     `);
-    dashboardMarkers[r.id] = m;
   });
 
   map.on("popupopen", (e) => {
@@ -734,49 +885,6 @@ function initDashboardMap() {
   });
 
   maps.dashboard = map;
-}
-
-function flyToReport(id) {
-  const r = getReportById(id);
-  const m = dashboardMarkers[id];
-  if (maps.dashboard && r) {
-    maps.dashboard.flyTo([r.lat, r.lng], 18, { duration: 0.6 });
-    if (m) setTimeout(() => m.openPopup(), 650);
-  }
-}
-
-function renderPriorityList() {
-  const list = document.getElementById("priority-list");
-  if (!list) return;
-  const all = getAllReports()
-    .map((r) => {
-      const last = r.history[r.history.length - 1];
-      const g = gradeOf(last.score);
-      const days = Math.floor((Date.now() - r.createdAt) / (1000 * 60 * 60 * 24));
-      return { r, last, g, days };
-    })
-    .sort((a, b) => b.last.score - a.last.score || b.days - a.days);
-
-  list.innerHTML = all
-    .map((item, idx) => {
-      return `
-      <div class="priority-row" data-fly="${item.r.id}">
-        <div class="priority-rank ${idx < 3 ? "top" : ""}">${idx + 1}</div>
-        <div class="priority-mid">
-          <div class="priority-addr">${escapeHtml(item.r.addr)}</div>
-          <div class="priority-meta">${item.g.emoji} ${item.g.label} · ${item.r.registered ? "등록" : "미등록"} · ${item.days <= 0 ? "오늘 제보" : `방치 ${item.days}일`}</div>
-        </div>
-        <div class="priority-score" style="color:${item.g.key === "danger" ? "#FF5A5F" : item.g.key === "warn" ? "#FF9F1C" : "#00C471"}">${item.last.score}점</div>
-      </div>`;
-    })
-    .join("");
-
-  list.querySelectorAll("[data-fly]").forEach((row) =>
-    row.addEventListener("click", () => {
-      toggleSheet(false);
-      flyToReport(row.dataset.fly);
-    })
-  );
 }
 
 /* ============================================================ */

@@ -25,7 +25,7 @@ export const SEED_REPORTS = [
     id: "seed-1",
     lat: 37.4834,
     lng: 126.9291,
-    addr: "신림동 1520-5 담벼락 옆 (미등록)",
+    addr: "관악구 신림동 1520-5 담벼락 옆 (미등록)",
     registered: false,
     isSeed: true,
     illust: "🗑️",
@@ -47,7 +47,7 @@ export const SEED_REPORTS = [
   {
     id: "seed-2",
     lat: 37.4859, lng: 126.9315,
-    addr: "신림동 1536-1 원룸촌 입구 (미등록)",
+    addr: "관악구 신림동 1536-1 원룸촌 입구 (미등록)",
     registered: false,
     isSeed: true,
     illust: "🧥",
@@ -78,7 +78,7 @@ export const SEED_REPORTS = [
   {
     id: "seed-3",
     lat: 37.4822, lng: 126.9285,
-    addr: "신림동 1505-9 다세대주택 앞 (미등록)",
+    addr: "관악구 신림동 1505-9 다세대주택 앞 (미등록)",
     registered: false,
     isSeed: true,
     illust: "📦",
@@ -98,7 +98,7 @@ export const SEED_REPORTS = [
   {
     id: "seed-4",
     lat: 37.4865, lng: 126.9327,
-    addr: "신림동 1552-2 골목 안쪽 (미등록)",
+    addr: "관악구 신림동 1552-2 골목 안쪽 (미등록)",
     registered: false,
     isSeed: true,
     illust: "🚮",
