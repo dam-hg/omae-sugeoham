@@ -1,9 +1,9 @@
 // Gemini Vision으로 수거함 사진 상태를 판별한다.
 // 실패(키 만료/과부하/네트워크)하면 호출부에서 사용자 체크리스트로 자연스럽게 넘어간다.
-// GitHub push protection이 저장소에 키가 들어가는 것을 차단하므로 여기서는 비워둔다.
-// 아래 상수에 Gemini API 키를 넣으면 AI 판독이 켜지고, 비어 있으면
+// 시연용 Gemini API 키. 공개 저장소에 포함되므로 외부 노출을 전제로 쓰고,
+// 시연이 끝나면 폐기할 것. 키가 비거나 만료되면 analyzePhoto가 실패를 반환하고
 // 사용자가 직접 체크하는 방식으로 자동 전환된다.
-const API_KEY = "";
+const API_KEY = "AQ.Ab8RN6KJuYql29t8UWmi_-xjhL36JaKnRafbesTCteGWoaLpmw";
 
 // 과부하(503)가 잦아 최신 모델부터 순서대로 시도한다.
 const MODELS = ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-flash-latest"];
