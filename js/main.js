@@ -41,6 +41,7 @@ const regionState = {
 const maps = { home: null, pin: null, dashboard: null };
 let cameraStream = null;
 let geocodeToken = 0;
+let gpsToken = 0;
 
 function destroyMap(key) {
   if (maps[key]) {
@@ -105,7 +106,11 @@ function render() {
   else if (state.tab === "report") renderReport();
   else if (state.tab === "map") renderMap();
   else if (state.tab === "mypage") renderMypage();
-  playViewEnter();
+  // 전체화면 뷰(지도·카메라)는 높이를 화면에 딱 맞추기 때문에, 진입 모션의
+  // translateY가 걸려 있는 동안 뷰 하단이 하단 네비 밑으로 밀려 내려가
+  // "목록으로 돌아가기" 버튼이 잘려 보인다. 그래서 모션을 걸지 않는다.
+  if (fullBleed) app.classList.remove("view-enter");
+  else playViewEnter();
   window.scrollTo(0, 0);
 }
 
@@ -442,12 +447,18 @@ function renderReportForm() {
   });
 
   initPinMap();
-  if (!d.loc) attemptAutoGPS();
+  // initPinMap이 중심 좌표를 바로 확정하므로 d.loc 유무로는 판단할 수 없다.
+  // 이 신고 건에서 아직 GPS를 시도하지 않았을 때만 자동으로 잡는다.
+  if (!d.gpsTried) {
+    d.gpsTried = true;
+    attemptAutoGPS();
+  }
 }
 
 function locReadoutText(d) {
   if (d.geocoding) return "주소 확인 중...";
   if (d.locAddress) return d.locAddress;
+  if (d.loc) return "지도를 움직여 위치를 맞춰주세요";
   return "위치를 확인하는 중이에요...";
 }
 
@@ -462,6 +473,10 @@ function syncDiagnoseBtn() {
   if (btn) btn.disabled = !(d.file && d.loc);
 }
 
+let geocodeDebounce = null;
+
+// 좌표는 즉시 확정하고(= 다음 단계 버튼 활성화), 주소 조회만 디바운스한다.
+// 지도를 드래그하는 동안 moveend가 연달아 발생해도 요청이 몰리지 않게 한다.
 function setLoc(loc) {
   const d = state.reportDraft;
   d.loc = loc;
@@ -469,37 +484,70 @@ function setLoc(loc) {
   syncDiagnoseBtn();
   setLocReadoutText("주소 확인 중...");
   const myToken = ++geocodeToken;
-  reverseGeocode(loc.lat, loc.lng).then((addr) => {
-    if (myToken !== geocodeToken) return; // 그 사이 위치가 또 바뀌었으면 무시
-    d.locAddress = addr;
-    d.geocoding = false;
-    setLocReadoutText(addr);
-  });
+  clearTimeout(geocodeDebounce);
+  geocodeDebounce = setTimeout(() => {
+    reverseGeocode(loc.lat, loc.lng).then((addr) => {
+      if (myToken !== geocodeToken) return; // 그 사이 위치가 또 바뀌었으면 무시
+      d.geocoding = false;
+      d.locAddress = addr; // 실패하면 빈 문자열
+      // 주소를 못 얻어도 좌표는 유효하므로 신고는 계속 진행할 수 있다.
+      setLocReadoutText(addr || "주소를 확인하지 못했어요 · 위치는 지도 핀 기준으로 기록돼요");
+    });
+  }, 450);
 }
 
 function panMapTo(lat, lng) {
-  if (maps.pin) {
-    maps.pin.setView([lat, lng], 17);
-  } else {
-    setLoc({ lat, lng });
-  }
+  if (maps.pin) maps.pin.setView([lat, lng], 17);
+  // moveend가 안 오는 경우(같은 뷰로 이동)에도 좌표가 반영되도록 직접 확정한다.
+  setLoc({ lat, lng });
 }
 
-function attemptAutoGPS() {
+function getPosition(options) {
+  return new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(resolve, reject, options);
+  });
+}
+
+// 모바일에서 GPS 콜드스타트는 실내에서 8초를 넘기는 일이 흔해 예전 구현은
+// 자주 실패했다. 그래서 2단계로 나눈다.
+//   1단계 - 기지국·와이파이 기반의 저정확도 조회(캐시 허용). 거의 즉시 잡힌다.
+//   2단계 - 위성 기반 고정확도 조회로 핀을 다시 보정.
+// 1단계가 성공하면 사용자는 이미 지도를 쓸 수 있고, 2단계는 조용히 덧붙는다.
+async function attemptAutoGPS() {
   setLocReadoutText("GPS 위치를 확인하는 중...");
   if (!navigator.geolocation) {
     toast("이 브라우저에서는 위치 확인이 지원되지 않아요. 지도를 움직여 위치를 선택해주세요");
-    panMapTo(NEIGHBORHOOD.center[0], NEIGHBORHOOD.center[1]);
     return;
   }
-  navigator.geolocation.getCurrentPosition(
-    (pos) => panMapTo(pos.coords.latitude, pos.coords.longitude),
-    () => {
-      toast("위치 확인에 실패했어요. 지도를 움직여 정확한 위치를 선택해주세요");
-      panMapTo(NEIGHBORHOOD.center[0], NEIGHBORHOOD.center[1]);
-    },
-    { timeout: 8000, enableHighAccuracy: true }
-  );
+
+  const myToken = ++gpsToken;
+  let gotAny = false;
+
+  try {
+    const coarse = await getPosition({ enableHighAccuracy: false, timeout: 9000, maximumAge: 120000 });
+    if (myToken !== gpsToken) return;
+    gotAny = true;
+    panMapTo(coarse.coords.latitude, coarse.coords.longitude);
+  } catch (err) {
+    if (myToken !== gpsToken) return;
+    if (err && err.code === 1) {
+      // PERMISSION_DENIED — 재시도해도 의미가 없다.
+      toast("위치 권한이 꺼져 있어요. 브라우저 설정에서 허용하거나 지도를 움직여 선택해주세요");
+      return;
+    }
+  }
+
+  try {
+    const fine = await getPosition({ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+    if (myToken !== gpsToken) return;
+    gotAny = true;
+    panMapTo(fine.coords.latitude, fine.coords.longitude);
+  } catch (err) {
+    if (myToken !== gpsToken) return;
+    if (!gotAny && err && err.code !== 1) {
+      toast("GPS 신호가 약해요. 지도를 움직여 정확한 위치를 선택해주세요");
+    }
+  }
 }
 
 function initPinMap() {
@@ -520,6 +568,12 @@ function initPinMap() {
   });
 
   maps.pin = map;
+
+  // setView가 기존 뷰와 같으면 Leaflet은 moveend를 발생시키지 않는다.
+  // 그 경우 d.loc이 끝까지 비어 다음 단계 버튼이 영구히 잠기므로,
+  // 지도를 만든 직후 현재 중심을 한 번 확정해 둔다.
+  const c0 = map.getCenter();
+  setLoc({ lat: c0.lat, lng: c0.lng });
 }
 
 function renderReportLoading() {
@@ -537,7 +591,17 @@ function renderReportLoading() {
 }
 
 const CHECK_ITEMS = [
-  { key: "noManager", label: "관리자 표시 없음", pts: 50, hint: "수거함에 관리업체명·연락처가 안 보이나요?" },
+  {
+    key: "noManager",
+    label: "관리자 표시 없음",
+    pts: 50,
+    // 사진으로는 스티커 위치·글자 크기 때문에 오판이 잦아, 이 항목만은
+    // 표준데이터 등록 여부로 자동 판정한다.
+    hint: (r) =>
+      r.registered
+        ? "표준데이터에 등록된 수거함이에요 · 관리 주체 확인됨"
+        : "표준데이터에서 확인되지 않는 수거함이에요 · 관리 주체 미확인",
+  },
   { key: "dump", label: "주변 투기물 발생", pts: 30, hint: "수거함 주변에 쓰레기가 쌓여 있나요?" },
   { key: "satur", label: "포화 상태", pts: 10, hint: "투입구가 막히거나 옷이 넘쳐 있나요?" },
   { key: "damage", label: "파손·노후", pts: 10, hint: "본체가 부서지거나 심하게 녹슬었나요?" },
@@ -591,7 +655,7 @@ function renderReportPreview(r) {
           <input type="checkbox" data-flag="${it.key}" ${flags[it.key] ? "checked" : ""} />
           <span class="check-mid">
             <span class="check-label">${it.label}</span>
-            <span class="check-hint">${it.hint}</span>
+            <span class="check-hint">${typeof it.hint === "function" ? it.hint(r) : it.hint}</span>
           </span>
           <span class="check-pts">+${it.pts}</span>
         </label>`
@@ -912,7 +976,8 @@ function detectRegionFromGPS() {
       regionState.gpsDone = true;
       refreshIfIdle();
     },
-    { timeout: 8000 }
+    // 시군구만 알아내면 되므로 정확도보다 성공률을 택한다(캐시 위치 허용).
+    { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 }
   );
 }
 

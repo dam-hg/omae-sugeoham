@@ -1,6 +1,7 @@
 import { haversine, gradeOf } from "./utils.js";
-import { REGISTERED_BOXES, WEIGHTS, REASON_TEXT, LABEL_TEXT } from "./data.js";
+import { WEIGHTS, REASON_TEXT, LABEL_TEXT } from "./data.js";
 import { analyzePhoto } from "./gemini.js";
+import { loadGovBoxes } from "./govboxes.js";
 
 const MAX_DIM = 720;
 const ANALYSIS_DIM = 64;
@@ -65,9 +66,22 @@ function drawResized(img) {
   return canvas.toDataURL("image/jpeg", 0.85);
 }
 
-function nearestRegisteredDistance(lat, lng) {
+// 「전국의류수거함표준데이터」 13,975건 전체를 기준으로 가장 가까운 등록 수거함까지의
+// 거리를 구한다. 좌표가 일치하는 항목이 이 반경 안에 있으면 "등록"으로 본다.
+const REGISTERED_RADIUS_M = 40;
+
+async function nearestRegisteredDistance(lat, lng) {
+  let boxes = [];
+  try {
+    boxes = await loadGovBoxes();
+  } catch (e) {
+    console.warn("표준데이터를 불러오지 못해 등록 여부를 확인할 수 없음", e);
+    return null; // 알 수 없음
+  }
   let min = Infinity;
-  for (const box of REGISTERED_BOXES) {
+  for (const box of boxes) {
+    // 위·경도 차이로 먼저 걸러 13,975건 전수 haversine을 피한다(약 0.01도 ≈ 1.1km).
+    if (Math.abs(box.lat - lat) > 0.01 || Math.abs(box.lng - lng) > 0.01) continue;
     const d = haversine(lat, lng, box.lat, box.lng);
     if (d < min) min = d;
   }
@@ -109,13 +123,12 @@ export async function runDiagnosis(file, loc, resolvedAddress) {
   const stats = analyzeImage(img);
   const photo = drawResized(img);
 
-  const dist = nearestRegisteredDistance(loc.lat, loc.lng);
-  const registered = dist <= 40;
+  const dist = await nearestRegisteredDistance(loc.lat, loc.lng);
+  const registered = dist !== null && dist <= REGISTERED_RADIUS_M;
 
   // 1순위: Gemini Vision 판독. 실패하면 픽셀 통계로 아주 뚜렷한 경우만 제안한다.
   // 어느 쪽이든 최종 확정은 사용자가 체크리스트로 확인한다.
   let flags = {
-    noManager: false,
     dump: stats.darkRatio > 0.35 && stats.stdL > 60,
     satur: stats.brightRatio > 0.4,
     damage: stats.brownRatio > 0.15,
@@ -127,6 +140,11 @@ export async function runDiagnosis(file, loc, resolvedAddress) {
   } catch (e) {
     console.warn("vision 분석 실패, 기본 제안값 사용", e);
   }
+
+  // 관리자 표시 여부는 사진 판독 신뢰도가 낮아 표준데이터 등록 여부로 판단한다.
+  // 표준데이터에 없는 수거함은 관리 주체가 확인되지 않는 것이므로 체크된다.
+  // 표준데이터를 못 불러왔을 때(dist === null)는 근거가 없으므로 체크하지 않는다.
+  flags.noManager = dist !== null && !registered;
 
   const { score, reasons, labels, grade } = scoreFromFlags(flags);
   const addr = resolvedAddress && resolvedAddress.trim() ? resolvedAddress.trim() : "선택한 위치";

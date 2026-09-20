@@ -20,6 +20,10 @@
   --radius-sm:10px;
   --shadow:0 2px 12px rgba(20,20,30,0.06);
   --shadow-lift:0 8px 24px rgba(20,20,30,0.12);
+  /* 하단 네비가 실제로 차지하는 높이(노치 안전영역 포함). 전체화면 뷰의
+     높이를 잡을 때 쓴다. 모바일 브라우저는 주소창 때문에 100vh가 실제
+     보이는 높이보다 크므로, 지원되면 100dvh로 덮어쓴다. */
+  --nav-h:calc(58px + env(safe-area-inset-bottom));
 }
 
 *{box-sizing:border-box;}
@@ -352,6 +356,7 @@ input,textarea{font-family:inherit;}
   background:#000;
   display:flex;flex-direction:column;
   height:calc(100vh - 58px);
+  height:calc(100dvh - var(--nav-h));
 }
 .camera-topbar{
   display:flex;align-items:center;gap:10px;
@@ -739,6 +744,7 @@ input,textarea{font-family:inherit;}
 .map-view-wrap{
   position:relative;
   height:calc(100vh - 58px);
+  height:calc(100dvh - var(--nav-h));
 }
 #dashboard-map{
   height:100%;

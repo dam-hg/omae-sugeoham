@@ -73,34 +73,95 @@ export function toast(msg) {
 }
 
 const geocodeCache = new Map();
+const GEO_TIMEOUT = 7000;
 
-// OpenStreetMap Nominatim으로 좌표를 사람이 읽는 주소로 변환한다.
-// 실패해도 좌표를 노출하지 않고 안전한 문구로 대체한다.
+async function fetchJson(url, timeoutMs = GEO_TIMEOUT) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { headers: { Accept: "application/json" }, signal: controller.signal });
+    if (!res.ok) throw new Error(`geocode ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// BigDataCloud의 reverse-geocode-client. 키가 필요 없고 브라우저 호출을 전제로
+// 제공되는 엔드포인트다. 행정구역을 adminLevel로 구조화해 주기 때문에
+// 시도(4)/시군구(6)/법정동(8)을 안정적으로 뽑을 수 있어 1순위로 쓴다.
+async function viaBigDataCloud(lat, lng) {
+  const j = await fetchJson(
+    `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=ko`
+  );
+  const adm = j?.localityInfo?.administrative || [];
+  const nameAt = (level) => (adm.find((a) => a.adminLevel === level) || {}).name || "";
+  const dongs = adm.filter((a) => a.adminLevel === 8);
+  // 같은 좌표에 법정동과 행정동이 함께 오는데, 표준데이터는 법정동 기준이다.
+  const dong = (dongs.find((a) => (a.description || "").includes("법정동")) || dongs[0] || {}).name || "";
+  const parts = [...new Set([nameAt(4), nameAt(6), dong].filter(Boolean))];
+  return parts.join(" ");
+}
+
+// 도로명·건물번호까지 붙으면 민원 문안이 더 정확해진다. 부가 정보라서
+// 실패하면 조용히 건너뛴다.
+async function roadDetail(lat, lng) {
+  const j = await fetchJson(
+    `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&accept-language=ko`
+  );
+  const a = j.address || {};
+  return [a.road, a.house_number].filter(Boolean).join(" ");
+}
+
+async function viaNominatim(lat, lng) {
+  const data = await fetchJson(
+    `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&accept-language=ko`
+  );
+  const a = data.address || {};
+  const parts = [
+    a.city || a.county || a.province,
+    a.borough || a.city_district,
+    a.suburb || a.neighbourhood || a.village || a.town,
+    a.road,
+    a.house_number,
+  ].filter(Boolean);
+  const addr = parts.join(" ").trim();
+  if (addr) return addr;
+  return data.display_name ? data.display_name.split(",").slice(0, 3).join(",").trim() : "";
+}
+
+// 좌표를 사람이 읽는 주소로 바꾼다. 한쪽 서비스가 죽어도 신고가 막히지 않도록
+// 두 제공자를 순서대로 시도하고, 끝까지 실패하면 빈 문자열을 반환한다.
+// (호출부가 "실패"를 구분해 재시도 안내를 띄울 수 있게 하기 위함)
 export async function reverseGeocode(lat, lng) {
   const key = `${lat.toFixed(4)},${lng.toFixed(4)}`;
   if (geocodeCache.has(key)) return geocodeCache.get(key);
 
+  let addr = "";
   try {
-    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&accept-language=ko`;
-    const res = await fetch(url, { headers: { Accept: "application/json" } });
-    if (!res.ok) throw new Error("geocode failed");
-    const data = await res.json();
-    const a = data.address || {};
-    const parts = [
-      a.city || a.county || a.province,
-      a.borough || a.city_district,
-      a.suburb || a.neighbourhood || a.village || a.town,
-      a.road,
-      a.house_number,
-    ].filter(Boolean);
-    let addr = parts.join(" ").trim();
-    if (!addr) addr = data.display_name ? data.display_name.split(",").slice(0, 3).join(",").trim() : "";
-    if (!addr) addr = "주소를 확인할 수 없는 위치";
-    geocodeCache.set(key, addr);
-    return addr;
+    addr = await viaBigDataCloud(lat, lng);
   } catch (e) {
-    return "주소 확인 중 오류 (지도에서 선택한 위치)";
+    console.warn("bigdatacloud 역지오코딩 실패", e.message);
   }
+
+  if (addr) {
+    try {
+      const road = await roadDetail(lat, lng);
+      if (road && !addr.includes(road)) addr += " " + road;
+    } catch (e) {
+      /* 도로명은 부가 정보라 실패해도 그대로 진행 */
+    }
+  } else {
+    try {
+      addr = await viaNominatim(lat, lng);
+    } catch (e) {
+      console.warn("nominatim 역지오코딩 실패", e.message);
+    }
+  }
+
+  if (!addr) return "";
+  geocodeCache.set(key, addr);
+  return addr;
 }
 
 export function escapeHtml(str = "") {

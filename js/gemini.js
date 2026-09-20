@@ -8,9 +8,11 @@ const API_KEY = "AQ.Ab8RN6KJuYql29t8UWmi_-xjhL36JaKnRafbesTCteGWoaLpmw";
 // 과부하(503)가 잦아 최신 모델부터 순서대로 시도한다.
 const MODELS = ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-flash-latest"];
 
-const PROMPT = `너는 길거리 의류수거함 사진을 점검하는 검사관이다. 사진을 보고 아래 4가지를 판정해라.
+// 관리자 표시(업체명·연락처) 여부는 사진 판독으로는 신뢰도가 낮다.
+// 스티커가 측면에 있거나 글자가 작으면 오판이 잦아서 AI에게 묻지 않고,
+// 표준데이터 등록 여부로 판단한다(diagnose.js 참고).
+const PROMPT = `너는 길거리 의류수거함 사진을 점검하는 검사관이다. 사진을 보고 아래 3가지를 판정해라.
 
-- noManager: 수거함 표면에 관리업체명이나 연락처(전화번호)가 보이지 않으면 true. 글자가 보이면 false.
 - dump: 수거함 주변 바닥에 쓰레기봉투, 폐기물, 버려진 물건이 쌓여 있으면 true. 깨끗하면 false.
 - satur: 투입구가 막혔거나 의류가 밖으로 흘러넘쳤으면 true. 아니면 false.
 - damage: 본체가 부서졌거나 심하게 녹슬거나 기울어졌으면 true. 멀쩡하면 false.
@@ -21,7 +23,7 @@ const PROMPT = `너는 길거리 의류수거함 사진을 점검하는 검사�
 - summary는 사진에서 실제로 보이는 것만 한국어 한 문장으로 적어라.
 
 반드시 아래 JSON만 출력해라:
-{"binFound":true,"noManager":false,"dump":false,"satur":false,"damage":false,"summary":"..."}`;
+{"binFound":true,"dump":false,"satur":false,"damage":false,"summary":"..."}`;
 
 function extractJson(text) {
   const m = text.match(/\{[\s\S]*\}/);
@@ -39,13 +41,12 @@ const RESPONSE_SCHEMA = {
   type: "object",
   properties: {
     binFound: { type: "boolean" },
-    noManager: { type: "boolean" },
     dump: { type: "boolean" },
     satur: { type: "boolean" },
     damage: { type: "boolean" },
     summary: { type: "string" },
   },
-  required: ["binFound", "noManager", "dump", "satur", "damage", "summary"],
+  required: ["binFound", "dump", "satur", "damage", "summary"],
 };
 
 async function callModel(model, base64, mimeType, signal) {
@@ -93,8 +94,8 @@ export async function analyzePhoto(photoDataUrl, timeoutMs = 20000) {
           model,
           binFound: r.binFound !== false,
           summary: typeof r.summary === "string" ? r.summary : "",
+          // noManager는 표준데이터 등록 여부로 호출부에서 채운다.
           flags: {
-            noManager: !!r.noManager,
             dump: !!r.dump,
             satur: !!r.satur,
             damage: !!r.damage,
