@@ -8,7 +8,18 @@ const app = document.getElementById("app");
 const bottomnav = document.getElementById("bottomnav");
 
 function freshDraft() {
-  return { file: null, previewUrl: null, loc: null, locAddress: "", geocoding: false };
+  return {
+    file: null,
+    previewUrl: null,
+    loc: null,
+    locAddress: "",
+    geocoding: false,
+    // "default" = GPS 실패 시 보여주는 임시 좌표(사용자의 실제 위치가 아님)
+    // "gps" = GPS로 잡은 좌표, "manual" = 사용자가 지도를 움직여 지정한 좌표
+    locSource: "default",
+    locStatus: null,
+    locRequested: false,
+  };
 }
 
 const state = {
@@ -382,8 +393,7 @@ function proceedWithFile(file) {
   d.previewUrl = URL.createObjectURL(file);
   stopCameraStream();
   state.reportStep = "form";
-  render();
-  attemptAutoGPS();
+  render(); // renderReportForm이 위치 권한 확인까지 이어서 진행한다
 }
 
 function goToCamera() {
@@ -417,6 +427,7 @@ function renderReportForm() {
       <div class="center-pin">📍</div>
       <button class="recenter-btn" id="recenter-btn" aria-label="내 위치로 이동">🛰️</button>
     </div>
+    <div class="loc-status hidden" id="loc-status"></div>
     <div class="loc-readout" id="loc-readout">${locReadoutText(d)}</div>
 
     <div class="fixed-bottom-btn">
@@ -426,7 +437,7 @@ function renderReportForm() {
     </div>
   `;
 
-  document.getElementById("recenter-btn").addEventListener("click", attemptAutoGPS);
+  document.getElementById("recenter-btn").addEventListener("click", userRequestLocation);
 
   document.getElementById("diagnose-btn").addEventListener("click", async () => {
     if (!d.file || !d.loc) return;
@@ -447,19 +458,19 @@ function renderReportForm() {
   });
 
   initPinMap();
-  // initPinMap이 중심 좌표를 바로 확정하므로 d.loc 유무로는 판단할 수 없다.
-  // 이 신고 건에서 아직 GPS를 시도하지 않았을 때만 자동으로 잡는다.
-  if (!d.gpsTried) {
-    d.gpsTried = true;
-    attemptAutoGPS();
+  renderLocStatus(); // 다시 그려질 때 이전 상태 배너를 복원한다
+  // 이 신고 건에서 아직 위치를 요청하지 않았을 때만 권한 확인부터 시작한다.
+  if (!d.locRequested) {
+    d.locRequested = true;
+    initLocationFlow();
   }
 }
 
 function locReadoutText(d) {
+  if (d.locSource === "default") return "아직 수거함 위치가 지정되지 않았어요";
   if (d.geocoding) return "주소 확인 중...";
   if (d.locAddress) return d.locAddress;
-  if (d.loc) return "지도를 움직여 위치를 맞춰주세요";
-  return "위치를 확인하는 중이에요...";
+  return "지도를 움직여 위치를 맞춰주세요";
 }
 
 function setLocReadoutText(text) {
@@ -467,21 +478,37 @@ function setLocReadoutText(text) {
   if (el) el.textContent = text;
 }
 
+// 임시 좌표 그대로는 다음 단계로 못 넘어간다. GPS로 잡았거나 사용자가 지도를
+// 움직여 직접 지정했을 때만 진행시킨다(엉뚱한 위치로 신고되는 것을 막는다).
 function syncDiagnoseBtn() {
   const btn = document.getElementById("diagnose-btn");
   const d = state.reportDraft;
-  if (btn) btn.disabled = !(d.file && d.loc);
+  if (!btn) return;
+  const ready = !!(d.file && d.loc && d.locSource !== "default");
+  btn.disabled = !ready;
+  btn.textContent = ready ? "AI 진단하기 →" : "지도를 움직여 위치를 맞춰주세요";
 }
 
 let geocodeDebounce = null;
 
 // 좌표는 즉시 확정하고(= 다음 단계 버튼 활성화), 주소 조회만 디바운스한다.
 // 지도를 드래그하는 동안 moveend가 연달아 발생해도 요청이 몰리지 않게 한다.
-function setLoc(loc) {
+function setLoc(loc, source) {
   const d = state.reportDraft;
   d.loc = loc;
-  d.geocoding = true;
+  if (source) d.locSource = source;
   syncDiagnoseBtn();
+
+  // 임시 좌표는 사용자의 실제 위치가 아니다. 여기서 주소를 조회해 보여주면
+  // 엉뚱한 동네 주소를 자기 위치인 것처럼 읽게 되므로 조회하지 않는다.
+  if (d.locSource === "default") {
+    d.geocoding = false;
+    d.locAddress = "";
+    setLocReadoutText("아직 수거함 위치가 지정되지 않았어요");
+    return;
+  }
+
+  d.geocoding = true;
   setLocReadoutText("주소 확인 중...");
   const myToken = ++geocodeToken;
   clearTimeout(geocodeDebounce);
@@ -496,10 +523,10 @@ function setLoc(loc) {
   }, 450);
 }
 
-function panMapTo(lat, lng) {
+function panMapTo(lat, lng, source) {
   if (maps.pin) maps.pin.setView([lat, lng], 17);
   // moveend가 안 오는 경우(같은 뷰로 이동)에도 좌표가 반영되도록 직접 확정한다.
-  setLoc({ lat, lng });
+  setLoc({ lat, lng }, source);
 }
 
 function getPosition(options) {
@@ -508,45 +535,167 @@ function getPosition(options) {
   });
 }
 
-// 모바일에서 GPS 콜드스타트는 실내에서 8초를 넘기는 일이 흔해 예전 구현은
-// 자주 실패했다. 그래서 2단계로 나눈다.
-//   1단계 - 기지국·와이파이 기반의 저정확도 조회(캐시 허용). 거의 즉시 잡힌다.
-//   2단계 - 위성 기반 고정확도 조회로 핀을 다시 보정.
-// 1단계가 성공하면 사용자는 이미 지도를 쓸 수 있고, 2단계는 조용히 덧붙는다.
-async function attemptAutoGPS() {
-  setLocReadoutText("GPS 위치를 확인하는 중...");
-  if (!navigator.geolocation) {
-    toast("이 브라우저에서는 위치 확인이 지원되지 않아요. 지도를 움직여 위치를 선택해주세요");
+/* ---------------- 위치 권한 ---------------- */
+// 브라우저가 위치 권한을 "거부"로 기억하고 있으면 getCurrentPosition은
+// 권한 창을 띄우지 않고 곧바로 실패한다. 이때와 "아직 묻지 않음"을 구분하지
+// 못하면 "위치를 조회할 수 없다"는 말밖에 못 하게 되므로, 실제 조회 전에
+// Permissions API로 상태를 먼저 확인한다.
+async function geoPermissionState() {
+  if (!navigator.geolocation) return "unsupported";
+  if (!navigator.permissions || !navigator.permissions.query) return "unknown";
+  try {
+    const st = await navigator.permissions.query({ name: "geolocation" });
+    return st.state; // granted | prompt | denied
+  } catch (e) {
+    return "unknown"; // 일부 사파리는 geolocation 항목 조회를 지원하지 않는다
+  }
+}
+
+// 권한을 되살리는 경로가 OS마다 달라서 각각 안내한다.
+function permissionHelpText() {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad|iPod/.test(ua)) {
+    return "설정 앱 → Safari → 위치 → ‘확인 후 허용’으로 바꾸고, 사이트별 설정에서도 이 사이트의 위치를 허용한 뒤 새로고침해주세요.";
+  }
+  if (/Android/.test(ua)) {
+    return "주소창 왼쪽 자물쇠(또는 ⓘ) → 권한 → 위치를 ‘허용’으로 바꾼 뒤 새로고침해주세요. 휴대폰 설정에서 브라우저 앱의 위치 권한도 켜져 있어야 해요.";
+  }
+  return "주소창 왼쪽 자물쇠 아이콘 → 위치 권한을 ‘허용’으로 바꾼 뒤 새로고침해주세요.";
+}
+
+function setLocStatus(kind, message, actionLabel) {
+  state.reportDraft.locStatus = { kind, message, actionLabel };
+  renderLocStatus();
+}
+
+function renderLocStatus() {
+  const el = document.getElementById("loc-status");
+  if (!el) return;
+  const s = state.reportDraft.locStatus;
+  if (!s) {
+    el.className = "loc-status hidden";
+    el.innerHTML = "";
     return;
   }
+  el.className = `loc-status ${s.kind}`;
+  el.innerHTML = `
+    <div class="loc-status-msg">${s.message}</div>
+    ${s.actionLabel ? `<button class="loc-status-btn" id="loc-action">${s.actionLabel}</button>` : ""}
+  `;
+  const btn = document.getElementById("loc-action");
+  if (btn) btn.addEventListener("click", userRequestLocation);
+}
 
+function showDeniedStatus() {
+  setLocStatus(
+    "denied",
+    `<b>위치 권한이 차단되어 있어요.</b><br>${permissionHelpText()}<br>지금은 지도를 움직여 수거함 위치를 직접 맞춰주세요.`,
+    "권한 다시 확인"
+  );
+}
+
+// 위치 확인 단계에 들어올 때 한 번 호출된다.
+// 이미 허용된 경우에만 바로 조회하고, 아직 묻지 않았으면 왜 필요한지
+// 먼저 설명한 뒤 사용자가 버튼을 눌렀을 때 권한 창을 띄운다.
+async function initLocationFlow() {
+  watchGeoPermission();
+  const perm = await geoPermissionState();
+
+  if (perm === "unsupported") {
+    setLocStatus("denied", "이 브라우저는 위치 기능을 지원하지 않아요.<br>지도를 움직여 수거함 위치를 맞춰주세요.");
+    return;
+  }
+  if (perm === "denied") {
+    showDeniedStatus();
+    return;
+  }
+  if (perm === "granted" || perm === "unknown") {
+    fetchPosition();
+    return;
+  }
+  // perm === "prompt" — 아직 한 번도 묻지 않은 상태
+  setLocStatus(
+    "prompt",
+    "수거함 위치를 자동으로 찾으려면 <b>위치 권한</b>이 필요해요.<br>허용하면 지금 계신 곳으로 지도를 옮겨드려요.",
+    "위치 권한 허용하고 내 위치 찾기"
+  );
+}
+
+// 버튼(권한 허용 / 다시 시도 / 🛰️)에서 호출된다. 사용자의 탭에서 출발하므로
+// 권한 창이 확실히 뜬다.
+async function userRequestLocation() {
+  const perm = await geoPermissionState();
+  if (perm === "unsupported") {
+    setLocStatus("denied", "이 브라우저는 위치 기능을 지원하지 않아요.<br>지도를 움직여 수거함 위치를 맞춰주세요.");
+    return;
+  }
+  if (perm === "denied") {
+    showDeniedStatus();
+    return;
+  }
+  fetchPosition();
+}
+
+// 모바일 GPS 콜드스타트는 실내에서 10초를 넘기는 일이 흔해 단판 조회로는
+// 자주 실패한다. 그래서 2단계로 나눈다.
+//   1단계 - 기지국·와이파이 기반 저정확도 조회(캐시 허용). 보통 즉시 잡힌다.
+//   2단계 - 위성 기반 고정확도 조회로 핀을 다시 보정.
+async function fetchPosition() {
   const myToken = ++gpsToken;
+  setLocStatus("checking", "내 위치를 찾는 중이에요...");
   let gotAny = false;
 
   try {
-    const coarse = await getPosition({ enableHighAccuracy: false, timeout: 9000, maximumAge: 120000 });
+    const coarse = await getPosition({ enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 });
     if (myToken !== gpsToken) return;
     gotAny = true;
-    panMapTo(coarse.coords.latitude, coarse.coords.longitude);
+    applyGpsPosition(coarse);
   } catch (err) {
     if (myToken !== gpsToken) return;
-    if (err && err.code === 1) {
-      // PERMISSION_DENIED — 재시도해도 의미가 없다.
-      toast("위치 권한이 꺼져 있어요. 브라우저 설정에서 허용하거나 지도를 움직여 선택해주세요");
-      return;
-    }
+    if (err && err.code === 1) return showDeniedStatus();
   }
 
   try {
     const fine = await getPosition({ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
     if (myToken !== gpsToken) return;
     gotAny = true;
-    panMapTo(fine.coords.latitude, fine.coords.longitude);
+    applyGpsPosition(fine);
   } catch (err) {
     if (myToken !== gpsToken) return;
-    if (!gotAny && err && err.code !== 1) {
-      toast("GPS 신호가 약해요. 지도를 움직여 정확한 위치를 선택해주세요");
+    if (err && err.code === 1) return showDeniedStatus();
+    if (!gotAny) {
+      setLocStatus(
+        "failed",
+        "<b>GPS 신호를 잡지 못했어요.</b><br>실내나 지하에서는 잘 안 잡혀요. 지도를 움직여 수거함 위치를 직접 맞춰주세요.",
+        "다시 시도"
+      );
     }
+  }
+}
+
+function applyGpsPosition(pos) {
+  const { latitude, longitude, accuracy } = pos.coords;
+  panMapTo(latitude, longitude, "gps");
+  setLocStatus(
+    "ok",
+    `현재 위치를 찾았어요 · 오차 약 ${Math.round(accuracy)}m<br>수거함이 있는 지점으로 지도를 움직여 맞춰주세요.`
+  );
+}
+
+// 사용자가 설정에서 권한을 바꾸면 새로고침 없이 바로 반영한다.
+let geoPermWatcher = null;
+async function watchGeoPermission() {
+  if (geoPermWatcher || !navigator.permissions || !navigator.permissions.query) return;
+  try {
+    const st = await navigator.permissions.query({ name: "geolocation" });
+    geoPermWatcher = st;
+    st.onchange = () => {
+      if (state.tab !== "report" || state.reportStep !== "form") return;
+      if (st.state === "granted") fetchPosition();
+      else if (st.state === "denied") showDeniedStatus();
+    };
+  } catch (e) {
+    /* 미지원 브라우저는 그냥 넘어간다 */
   }
 }
 
@@ -564,16 +713,25 @@ function initPinMap() {
   // 배달의민족/카카오T 방식: 핀은 화면 중앙에 고정, 지도를 움직여 핀 아래 위치를 고른다
   map.on("moveend", () => {
     const c = map.getCenter();
-    setLoc({ lat: c.lat, lng: c.lng });
+    setLoc({ lat: c.lat, lng: c.lng }); // 출처는 그대로 두고 좌표만 갱신
+  });
+
+  // dragend는 사용자가 직접 끌었을 때만 발생한다(프로그램 이동에는 안 뜬다).
+  // 이때 비로소 "직접 지정한 위치"로 승격시킨다.
+  map.on("dragend", () => {
+    const c = map.getCenter();
+    setLoc({ lat: c.lat, lng: c.lng }, "manual");
+    if (!d.locStatus || d.locStatus.kind !== "ok") {
+      setLocStatus("ok", "이 위치로 신고해요. 핀이 수거함 위에 오도록 맞춰주세요.");
+    }
   });
 
   maps.pin = map;
 
   // setView가 기존 뷰와 같으면 Leaflet은 moveend를 발생시키지 않는다.
-  // 그 경우 d.loc이 끝까지 비어 다음 단계 버튼이 영구히 잠기므로,
-  // 지도를 만든 직후 현재 중심을 한 번 확정해 둔다.
+  // 그 경우 d.loc이 끝까지 비어버리므로 지도를 만든 직후 중심을 한 번 확정한다.
   const c0 = map.getCenter();
-  setLoc({ lat: c0.lat, lng: c0.lng });
+  setLoc({ lat: c0.lat, lng: c0.lng }, d.locSource);
 }
 
 function renderReportLoading() {
