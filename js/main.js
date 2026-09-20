@@ -162,7 +162,7 @@ function renderHome() {
 
   app.innerHTML = `
     <div class="topbar">
-      <div class="brand-wordmark">오매<span>!</span> 수거함</div>
+      <div class="brand-wordmark">오메<span>!</span> 수거함</div>
     </div>
     <div class="topbar-sub">사진 한 장으로 시작하는 우리 동네 방치수거함 신고</div>
 
@@ -1038,7 +1038,7 @@ function buildReportDashboard(r) {
 
 function buildFallbackDraft(r) {
   const last = r.history[r.history.length - 1];
-  return `[오매! 수거함 제보]\n위치: ${r.addr}\n상태: ${last.labels.join(", ")}\n위험도: ${last.score}점`;
+  return `[오메! 수거함 제보]\n위치: ${r.addr}\n상태: ${last.labels.join(", ")}\n위험도: ${last.score}점`;
 }
 
 function bindCopyButtons(r) {

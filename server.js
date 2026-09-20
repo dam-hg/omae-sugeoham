@@ -40,4 +40,4 @@ http
       res.end(data);
     });
   })
-  .listen(port, () => console.log(`오매! 수거함 dev server listening on ${port}`));
+  .listen(port, () => console.log(`오메! 수거함 dev server listening on ${port}`));

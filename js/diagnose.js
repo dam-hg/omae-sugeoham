@@ -104,7 +104,7 @@ export function scoreFromFlags(flags) {
 }
 
 export function buildDraft({ addr, dateStr, labels, score, grade, reasons, registered }) {
-  return `[오매! 수거함 제보]
+  return `[오메! 수거함 제보]
 위치: ${addr}
 촬영일시: ${dateStr}
 상태 분류: ${labels.join(", ")}
